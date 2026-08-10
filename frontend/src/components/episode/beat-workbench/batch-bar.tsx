@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
+  ListChecks,
   Loader2,
   Mic2,
   Palette,
@@ -35,6 +36,7 @@ import { CreditCostInline } from "@/components/credit-cost-inline";
 import { CreditCostPill } from "@/components/credits/credit-visual";
 import type { Beat } from "@/types/episode";
 
+import { BatchPipelineDialog } from "./batch-pipeline-dialog";
 import { RenderModelSelect } from "./render-settings-controls";
 import { SketchModelSelect, SketchAspectCheckbox } from "./sketch-settings-controls";
 import { Button } from "@/components/ui/button";
@@ -123,6 +125,7 @@ export function BatchBar({
       ? t("common.billingRuleNotConfiguredShort")
       : null);
 
+  const [batchPipelineOpen, setBatchPipelineOpen] = useState(false);
   const [errorDialog, setErrorDialog] = useState<{
     title: string;
     description: string;
@@ -346,6 +349,16 @@ export function BatchBar({
             )}
             {t("episode.workbench.batch.reassignColors")}
           </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setBatchPipelineOpen(true)}
+            className={TOOLBAR_CONTROL_CLASS}
+            title={t("episode.workbench.batchPipeline.tooltip")}
+          >
+            <ListChecks className="size-3.5" />
+            {t("episode.workbench.batchPipeline.button")}
+          </Button>
           {/* 精品剧 (spine_template === "drama") 把解说烘进渲染视频，没有独立音频阶段 —— 隐藏「生成全集音频」 */}
           {spineTemplate !== "drama" && (
           <Tooltip>
@@ -413,6 +426,16 @@ export function BatchBar({
           )}
         </div>
       </div>
+
+      {/* 按需挂载：关着的时候连状态查询都不该发起 */}
+      {batchPipelineOpen && (
+        <BatchPipelineDialog
+          open
+          onOpenChange={setBatchPipelineOpen}
+          project={project}
+          episode={episode}
+        />
+      )}
 
       {/* Confirmation dialog for episode-level actions */}
       <AlertDialog open={confirm !== null} onOpenChange={(v) => !v && setConfirm(null)}>

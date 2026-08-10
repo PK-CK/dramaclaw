@@ -2659,6 +2659,39 @@
         "episodeFreezoneOpened": "已打开 EP Freezone",
         "episodeFreezoneOpenFailed": "打开 EP Freezone 失败"
       },
+      "batchPipeline": {
+        "button": "批量流水线",
+        "tooltip": "把体检→规划→场次校验→草图→渲染→出片六步串起来跑，中途在三个闸门停下等确认",
+        "title": "批量流水线",
+        "description": "按顺序跑完六步。场景分配表必须人工确认；草图与渲染抽查可预授权自动放行。",
+        "start": "开始批量",
+        "cancel": "取消流水线",
+        "cancelled": "已请求取消",
+        "approve": "确认放行",
+        "reject": "驳回并停止",
+        "gateApproved": "已放行，流水线继续",
+        "gateRejected": "已驳回，流水线停止",
+        "preauthTitle": "预授权(勾选的闸门自动放行)",
+        "preauthGate": "自动放行：{{gate}}",
+        "mandatoryGateNote": "场景分配表不可预授权——它决定后面每一张图的背景，错了要全部重出。",
+        "costEstimate": "预估：{{beats}} 个 beat，视频 {{seconds}} 秒 ≈ ${{usd}}",
+        "sceneTableSummary": "共 {{total}} 个 beat，{{changed}} 个需要改写，{{low}} 个低置信",
+        "lowConfidenceBeats": "低置信 beat：{{beats}}，建议逐个核对",
+        "failedBeats": "未出片的 beat：{{beats}}。这些位置在成片里是缺口，会断剧情连续性，需单独重试后再合成。",
+        "steps": {
+          "preflight": "前置体检（零成本）",
+          "plan_assets": "场景与道具规划",
+          "match_scenes": "场次交叉验证 → 补场景关联",
+          "sketches": "批量草图",
+          "render": "批量渲染与视频提示词",
+          "videos": "逐镜出片"
+        },
+        "gates": {
+          "scene_assignment": "闸门 1 · 场景分配表",
+          "sketch_sample": "闸门 2 · 草图抽查",
+          "render_sample": "闸门 3 · 渲染抽查"
+        }
+      },
       "verify": {
         "notRun": "未执行",
         "running": "执行中",

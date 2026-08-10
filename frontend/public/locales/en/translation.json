@@ -2659,6 +2659,39 @@
         "episodeFreezoneOpened": "EP Freezone opened",
         "episodeFreezoneOpenFailed": "Failed to open EP Freezone"
       },
+      "batchPipeline": {
+        "button": "Batch pipeline",
+        "tooltip": "Run preflight → planning → scene matching → sketches → render → video as one pass, pausing at three gates",
+        "title": "Batch pipeline",
+        "description": "Runs six steps in order. The scene assignment table always needs a human sign-off; the sketch and render spot checks can be pre-authorized.",
+        "start": "Start batch",
+        "cancel": "Cancel pipeline",
+        "cancelled": "Cancellation requested",
+        "approve": "Approve",
+        "reject": "Reject and stop",
+        "gateApproved": "Approved, pipeline continues",
+        "gateRejected": "Rejected, pipeline stopped",
+        "preauthTitle": "Pre-authorize (checked gates pass automatically)",
+        "preauthGate": "Auto-approve: {{gate}}",
+        "mandatoryGateNote": "The scene assignment table cannot be pre-authorized — it decides the background of every image downstream.",
+        "costEstimate": "Estimate: {{beats}} beats, {{seconds}}s of video ≈ ${{usd}}",
+        "sceneTableSummary": "{{total}} beats, {{changed}} to be rewritten, {{low}} low-confidence",
+        "lowConfidenceBeats": "Low-confidence beats: {{beats}} — review them individually",
+        "failedBeats": "Beats without video: {{beats}}. They are gaps in the cut and break story continuity; retry them before composing.",
+        "steps": {
+          "preflight": "Preflight (no cost)",
+          "plan_assets": "Scene and prop planning",
+          "match_scenes": "Scene cross-check → backfill refs",
+          "sketches": "Batch sketches",
+          "render": "Batch render and video prompts",
+          "videos": "Per-shot video"
+        },
+        "gates": {
+          "scene_assignment": "Gate 1 · Scene assignment table",
+          "sketch_sample": "Gate 2 · Sketch spot check",
+          "render_sample": "Gate 3 · Render spot check"
+        }
+      },
       "verify": {
         "notRun": "Not run",
         "running": "Running",

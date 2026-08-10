@@ -5,6 +5,7 @@ Importing this package registers every built-in project task runner.
 
 from novelvideo.task_backend.runners import (  # noqa: F401
     audio,
+    batch_pipeline,
     character_image,
     episode_assets,
     freezone,
