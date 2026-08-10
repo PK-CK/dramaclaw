@@ -342,6 +342,26 @@ class SeedanceVideoGenerator(VideoGeneratorBase):
         if not self.api_key:
             raise ValueError("VOLCENGINE_VISUAL_API_KEY or ARK_API_KEY must be set")
 
+    async def _download_grok_video(self, url: str, output_path: str, log) -> bool:
+        """带 Bearer 鉴权下载 xAI 成片（基类下载不带 header，会 401）。"""
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+                resp = await client.get(
+                    url, headers={"Authorization": f"Bearer {self.api_key}"}
+                )
+                if resp.status_code != 200 or not resp.content:
+                    log(f"下载失败: HTTP {resp.status_code}")
+                    return False
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+                return True
+        except Exception as exc:
+            log(f"下载异常: {exc}")
+            return False
+
     def _local_to_data_url(self, image_path: str) -> str:
         """将本地图片转换为 data URL（base64）。"""
         import base64
@@ -1142,7 +1162,7 @@ class GrokVideoGenerator(VideoGeneratorBase):
         request_body = {
             "model": self.model,
             "prompt": prompt,
-            "image_url": image_url,
+            "image": {"url": image_url},
             "duration": duration,
             "aspect_ratio": ratio,
             "resolution": self.resolution,
@@ -1210,7 +1230,11 @@ class GrokVideoGenerator(VideoGeneratorBase):
                     )
                 log("视频生成完成，正在下载...")
                 progress(0.9)
-                success = await self._download_video(video_url, output_path)
+                # xAI 返回相对路径（/v1/videos/{id}/content）且下载需要 Bearer 鉴权，
+                # 基类 _download_video 既不拼 base 也不带 Authorization，此处单独处理。
+                if video_url.startswith("/"):
+                    video_url = f"{self.endpoint.rsplit('/v1', 1)[0]}{video_url}"
+                success = await self._download_grok_video(video_url, output_path, log)
                 if not success:
                     return VideoGenResult(
                         status=VideoGenStatus.FAILED,
