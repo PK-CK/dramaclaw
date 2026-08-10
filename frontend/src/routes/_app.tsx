@@ -87,7 +87,7 @@ function AppLayout() {
   const productSurfaces = useProductSurfaces(Boolean(username && validated));
   const requiredSurfaceCode: ProductSurfaceCode | null = routeProject
     ? isAssistantPage
-      ? null
+      ? "assistant"
       : /^\/projects\/[^/]+\/freezone$/.test(pathname)
         ? "freezone"
         : "mainline"

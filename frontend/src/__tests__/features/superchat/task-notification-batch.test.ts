@@ -121,6 +121,28 @@ describe("resolveChatTaskBatchSummary", () => {
     );
   });
 
+  it("labels sketch grid batches as storyboard grids", () => {
+    const tasks = [
+      task({ task_type: "sketch_grid_generation" }),
+      task({
+        task_key: "task:2",
+        task_id: "job-2",
+        task_type: "sketch_grid_generation",
+      }),
+      task({
+        task_key: "task:3",
+        task_id: "job-3",
+        task_type: "sketch_grid_generation",
+      }),
+    ];
+
+    const summary = resolveChatTaskBatchSummary(tasks, tasks[2]);
+
+    expect(buildChatTaskBatchNotification(summary!)).toBe(
+      "✅ 第 1 集 3 个草图网格已全部生成完成。你可以让我查看结果，或继续下一步。",
+    );
+  });
+
   it("does not aggregate ordinary single tasks", () => {
     const single = task({ metadata: null });
 

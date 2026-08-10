@@ -12,6 +12,7 @@ import { getDownstreamSpawnTypes } from "@/features/canvas/domain/nodeRegistry";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/context/canvasActionCatalog";
 import {
   isBeatContextAgentEditablePatch,
+  normalizeCanvasCommandCreateNodeData,
   normalizeCanvasCommandNodeData,
 } from "@/features/freezone/canvasCommandNodeData";
 import {
@@ -190,7 +191,7 @@ export function validateCanvasChatCommandEnvelopes(
       const path = commandPath(envelopeIndex, commandIndex);
       switch (command.type) {
         case "create_node": {
-          const data = normalizeCanvasCommandNodeData(command.node_type, command.data);
+          const data = normalizeCanvasCommandCreateNodeData(command.node_type, command.data);
           const virtualNode = makeVirtualNode({
             client_id: command.client_id,
             node_type: command.node_type,
@@ -239,7 +240,7 @@ export function validateCanvasChatCommandEnvelopes(
           } else if (sourceNode && !nodeType) {
             nodeType = getDownstreamSpawnTypes(sourceNode.type)[0];
           }
-          const data = normalizeCanvasCommandNodeData(nodeType, command.data);
+          const data = normalizeCanvasCommandCreateNodeData(nodeType, command.data);
           if (command.client_id && nodeType) {
             const virtualNode = makeVirtualNode({
               client_id: command.client_id,

@@ -158,28 +158,20 @@ async def test_indextts2_newapi_posts_audio_speech_schema(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_indextts2_newapi_retries_transient_connection_reset(monkeypatch, tmp_path):
+async def test_indextts2_newapi_does_not_retry_transient_connection_reset(
+    monkeypatch, tmp_path
+):
     import httpx
     import novelvideo.generators.indextts2_fal as indextts2_fal
 
     from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
 
     attempts = 0
-    sleeps: list[int] = []
-
     class FlakyAsyncClient(_FakeAsyncClient):
         async def post(self, url, *, headers=None, json=None):
             nonlocal attempts
             attempts += 1
-            if attempts < 3:
-                raise httpx.ReadError("connection reset by peer")
-            return _FakeResponse(
-                content=b"generated-wav",
-                headers={"content-type": "audio/wav"},
-            )
-
-    async def fake_sleep(delay):
-        sleeps.append(delay)
+            raise httpx.ReadError("connection reset by peer")
 
     async def fake_reserve(model, *, source):
         return "reservation_1"
@@ -188,7 +180,6 @@ async def test_indextts2_newapi_retries_transient_connection_reset(monkeypatch, 
         return None
 
     monkeypatch.setattr(httpx, "AsyncClient", FlakyAsyncClient)
-    monkeypatch.setattr(indextts2_fal.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(indextts2_fal, "_reserve_tts_model_call", fake_reserve)
     monkeypatch.setattr(indextts2_fal, "_confirm_tts_model_call", fake_confirm)
 
@@ -204,10 +195,10 @@ async def test_indextts2_newapi_retries_transient_connection_reset(monkeypatch, 
         output_path=output_path,
     )
 
-    assert result.success is True
-    assert output_path.read_bytes() == b"generated-wav"
-    assert attempts == 3
-    assert sleeps == [1, 2]
+    assert result.success is False
+    assert "connection reset by peer" in str(result.error)
+    assert output_path.exists() is False
+    assert attempts == 1
 
 
 @pytest.mark.asyncio

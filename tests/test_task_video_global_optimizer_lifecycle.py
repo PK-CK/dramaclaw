@@ -172,7 +172,7 @@ async def test_global_optimize_video_closes_cognee_store_on_failure(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_global_optimize_video_stops_after_consecutive_model_failures(
+async def test_global_optimize_video_continues_after_consecutive_model_failures(
     monkeypatch, tmp_path
 ):
     from novelvideo import cognee
@@ -224,7 +224,7 @@ async def test_global_optimize_video_stops_after_consecutive_model_failures(
         lambda: FakeOptimizer(),
     )
 
-    with pytest.raises(RuntimeError, match="Beat 3: invalid structured output"):
+    with pytest.raises(RuntimeError, match="Beat 5: invalid structured output"):
         await video._run_global_optimize_video_async(
             {
                 "episode": 1,
@@ -238,5 +238,5 @@ async def test_global_optimize_video_stops_after_consecutive_model_failures(
             _project_ctx(tmp_path),
         )
 
-    assert attempts == [1, 2, 3]
-    assert any("连续 3 个 Beat 生成失败" in message for message in logs)
+    assert attempts == [1, 2, 3, 4, 5]
+    assert not any("提前停止全局优化" in message for message in logs)

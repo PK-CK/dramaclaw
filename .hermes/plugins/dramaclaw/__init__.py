@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
@@ -44,6 +46,9 @@ RENDER_PREREQ_CHAT_PREFIX = (
     "Beat 的草图后，再重新生成 Render。"
 )
 FIRST_FRAME_BATCH_SIZE = 9
+AGENT_BATCH_POLL_SECONDS = 2.0
+_AGENT_BATCH_DISPATCHERS: dict[str, threading.Thread] = {}
+_AGENT_BATCH_DISPATCHERS_LOCK = threading.Lock()
 FREEZONE_MAINLINE_WRITE_DENIED_MESSAGE = (
     "当前虾导运行在虾画画布中，只能查询项目状态或操作画布节点；"
     "不能从这里启动主线视频生成、分集/脚本规划、草图、首帧、配音、成片或单 Beat 视频任务。"
@@ -456,6 +461,107 @@ def _request(method: str, path: str, *, query: Any = None, body: Any = None) -> 
         })
     except URLError as exc:
         return {"ok": False, "error": f"network_error: {exc.reason}"}
+
+
+def _batch_available_slots(project: str, queue_kind: str) -> int:
+    """Return currently available project/user slots without changing queue limits."""
+    response = _request("GET", f"/api/v1/projects/{project}/tasks/limits")
+    data = response.get("data") if isinstance(response, dict) else None
+    lane = data.get(queue_kind) if isinstance(data, dict) else None
+    if not isinstance(lane, dict):
+        return 0
+
+    remaining: list[int] = []
+    for key in ("remaining", "user_remaining"):
+        value = lane.get(key)
+        if value is None:
+            continue
+        try:
+            remaining.append(max(int(value), 0))
+        except (TypeError, ValueError):
+            continue
+    return min(remaining) if remaining else 0
+
+
+def _is_capacity_error(result: dict[str, Any]) -> bool:
+    if int(result.get("status_code") or 0) == 429:
+        return True
+    data = result.get("data")
+    if isinstance(data, dict):
+        detail = data.get("data")
+        if isinstance(detail, dict) and detail.get("limit_scope"):
+            return True
+    return False
+
+
+def _submit_batch_items(
+    *,
+    pending: list[int],
+    slots: int,
+    submit_item: Any,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Submit only items that fit the existing queue and retain the rest."""
+    submitted: list[dict[str, Any]] = []
+    hard_failed: list[int] = []
+    while pending and slots > 0:
+        beat = pending[0]
+        result = submit_item(beat)
+        if result.get("ok") is False:
+            if _is_capacity_error(result):
+                break
+            hard_failed.append(beat)
+            pending.pop(0)
+            continue
+        pending.pop(0)
+        submitted.append({"beat": beat, "result": result})
+        slots -= 1
+    return submitted, hard_failed
+
+
+def _launch_capacity_aware_batch_dispatcher(
+    *,
+    batch_id: str,
+    project: str,
+    queue_kind: str,
+    pending: list[int],
+    submit_item: Any,
+) -> None:
+    """Refill an agent batch as existing queue capacity becomes available.
+
+    This is orchestration only: every child still enters through the normal API
+    admission checks, so the dispatcher cannot bypass project/user/lane limits.
+    """
+    if not pending:
+        return
+
+    def run() -> None:
+        try:
+            while pending:
+                slots = _batch_available_slots(project, queue_kind)
+                if slots > 0:
+                    _submitted, hard_failed = _submit_batch_items(
+                        pending=pending,
+                        slots=slots,
+                        submit_item=submit_item,
+                    )
+                    if hard_failed:
+                        # Invalid requests cannot become queue tasks. Stop instead of
+                        # repeatedly calling a known-bad endpoint forever.
+                        break
+                if pending:
+                    time.sleep(AGENT_BATCH_POLL_SECONDS)
+        finally:
+            with _AGENT_BATCH_DISPATCHERS_LOCK:
+                _AGENT_BATCH_DISPATCHERS.pop(batch_id, None)
+
+    thread = threading.Thread(
+        target=run,
+        name=f"dramaclaw-batch-{batch_id[-12:]}",
+        daemon=True,
+    )
+    with _AGENT_BATCH_DISPATCHERS_LOCK:
+        _AGENT_BATCH_DISPATCHERS[batch_id] = thread
+    thread.start()
 
 
 def _decode_response(status_code: int, text: str) -> dict[str, Any]:
@@ -1851,9 +1957,10 @@ def _handle_render_first_frames(args: dict[str, Any], **_: Any) -> str:
     """Generate first frames for an episode (首帧生成, selected_regen task).
 
     Wraps POST /projects/{project}/episodes/{episode}/beats/regenerate with
-    ``{"beat_indices": [beat]}``. One tool call queues up to nine independent
-    selected_regen tasks. If ``beat_indices`` is omitted, the next nine beats without
-    promoted first frames are resolved automatically. Requires sketches to exist first.
+    ``{"beat_indices": [beat]}``. One tool call registers up to nine independent
+    selected_regen tasks, submits only what fits the existing queue, and refills capacity
+    as tasks finish. If ``beat_indices`` is omitted, the next nine beats without promoted
+    first frames are resolved automatically. Requires sketches to exist first.
     """
     try:
         project = _project_from_args(args)
@@ -1891,20 +1998,29 @@ def _handle_render_first_frames(args: dict[str, Any], **_: Any) -> str:
         if args.get("model"):
             common_body["model"] = str(args["model"])
 
-        items: list[dict[str, Any]] = []
-        started: list[int] = []
-        failed: list[int] = []
-        for beat in requested:
-            result = _request(
+        def submit_item(beat: int) -> dict[str, Any]:
+            return _request(
                 "POST",
                 f"/api/v1/projects/{project}/episodes/{episode}/beats/regenerate",
                 body={**common_body, "beat_indices": [beat]},
             )
-            items.append({"beat": beat, "result": result})
-            if result.get("ok") is False:
-                failed.append(beat)
-            else:
-                started.append(beat)
+
+        pending = list(requested)
+        slots = _batch_available_slots(project, "default")
+        items, failed = _submit_batch_items(
+            pending=pending,
+            slots=slots,
+            submit_item=submit_item,
+        )
+        started = [int(item["beat"]) for item in items]
+        waiting = list(pending)
+        _launch_capacity_aware_batch_dispatcher(
+            batch_id=batch_id,
+            project=project,
+            queue_kind="default",
+            pending=pending,
+            submit_item=submit_item,
+        )
 
         return tool_result(
             {
@@ -1913,6 +2029,7 @@ def _handle_render_first_frames(args: dict[str, Any], **_: Any) -> str:
                 "batch_id": batch_id,
                 "requested": requested,
                 "started": started,
+                "waiting": waiting,
                 "failed": failed,
                 "items": items,
                 **(
@@ -1921,9 +2038,12 @@ def _handle_render_first_frames(args: dict[str, Any], **_: Any) -> str:
                     else {}
                 ),
                 "message": (
-                    f"第 {episode} 集已启动 {len(started)} 个首帧任务"
+                    f"第 {episode} 集首帧批次已登记：运行 {len(started)} 个，等待 {len(waiting)} 个"
                     if not failed
-                    else f"第 {episode} 集启动 {len(started)} 个首帧任务，{len(failed)} 个失败"
+                    else (
+                        f"第 {episode} 集首帧批次已登记：运行 {len(started)} 个，"
+                        f"等待 {len(waiting)} 个，{len(failed)} 个提交失败"
+                    )
                 ),
             }
         )
@@ -2107,7 +2227,7 @@ def _handle_start_single_video(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_start_video_batch(args: dict[str, Any], **_: Any) -> str:
-    """Queue up to nine independent beat video tasks in one agent write operation."""
+    """Register up to nine videos and refill them through the existing queue limits."""
     try:
         project = _project_from_args(args)
         episode = int(args.get("episode") or 1)
@@ -2139,21 +2259,29 @@ def _handle_start_video_batch(args: dict[str, Any], **_: Any) -> str:
             if args.get(key) is not None:
                 body[key] = args[key]
 
-        items: list[dict[str, Any]] = []
-        started: list[int] = []
-        failed: list[int] = []
-        for beat in beats:
-            result = _request(
+        def submit_item(beat: int) -> dict[str, Any]:
+            return _request(
                 "POST",
                 f"/api/v1/projects/{project}/episodes/{episode}/beats/{beat}/video",
                 body=body,
             )
-            item = {"beat": beat, "result": result}
-            items.append(item)
-            if result.get("ok") is False:
-                failed.append(beat)
-            else:
-                started.append(beat)
+
+        pending = list(beats)
+        slots = _batch_available_slots(project, "video")
+        items, failed = _submit_batch_items(
+            pending=pending,
+            slots=slots,
+            submit_item=submit_item,
+        )
+        started = [int(item["beat"]) for item in items]
+        waiting = list(pending)
+        _launch_capacity_aware_batch_dispatcher(
+            batch_id=batch_id,
+            project=project,
+            queue_kind="video",
+            pending=pending,
+            submit_item=submit_item,
+        )
 
         return tool_result(
             {
@@ -2162,12 +2290,16 @@ def _handle_start_video_batch(args: dict[str, Any], **_: Any) -> str:
                 "batch_id": batch_id,
                 "requested": beats,
                 "started": started,
+                "waiting": waiting,
                 "failed": failed,
                 "items": items,
                 "message": (
-                    f"第 {episode} 集已启动 {len(started)} 个视频任务"
+                    f"第 {episode} 集视频批次已登记：运行 {len(started)} 个，等待 {len(waiting)} 个"
                     if not failed
-                    else f"第 {episode} 集启动 {len(started)} 个视频任务，{len(failed)} 个失败"
+                    else (
+                        f"第 {episode} 集视频批次已登记：运行 {len(started)} 个，"
+                        f"等待 {len(waiting)} 个，{len(failed)} 个提交失败"
+                    )
                 ),
             }
         )
@@ -2882,8 +3014,10 @@ TOOLS = (
         _schema(
             "dramaclaw_render_first_frames",
             "Generate first frames for an episode (首帧生成, selected_regen task). Real endpoint POST "
-            "/projects/{project}/episodes/{episode}/beats/regenerate. One call starts up to nine "
-            "independent beat tasks. Omit beat_indices to render the next nine missing first frames. "
+            "/projects/{project}/episodes/{episode}/beats/regenerate. One call registers up to nine "
+            "independent beat tasks; only available queue slots start immediately and waiting Beats "
+            "are submitted automatically as capacity opens. Omit beat_indices to render the next "
+            "nine missing first frames. "
             "Requires sketches first. Poll dramaclaw_list_tasks(task_type='selected_regen', episode=N).",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
@@ -3040,7 +3174,8 @@ TOOLS = (
             "Generate videos for up to nine ready beats in one write operation. Each beat uses its "
             "stored video_prompt and must already have a first frame. Use this instead of repeated "
             "dramaclaw_start_single_video calls when two to nine beats are ready. Tasks remain "
-            "independent and excess work waits in the shared video queue. By default, a short beats "
+            "independent, continue to obey the existing video queue limits, and waiting Beats are "
+            "submitted automatically as capacity opens. By default, a short beats "
             "list is automatically filled with the next ready unfinished beats up to nine.",
             {
                 "project_id": {"type": "string"},

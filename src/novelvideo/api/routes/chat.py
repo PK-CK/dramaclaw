@@ -41,7 +41,7 @@ from novelvideo.freezone.canvas_command_bridge import (
     resolve_skill_studio_result,
 )
 from novelvideo.freezone.agent_config_store import save_user_agent_config_item
-from novelvideo.ports import get_usage_meter
+from novelvideo.ports import get_product_surface_access, get_usage_meter
 from novelvideo.project_context import ProjectContext, resolve_project_context
 from novelvideo.shared.billing_errors import (
     BILLING_RULE_NOT_CONFIGURED_MESSAGE,
@@ -1228,7 +1228,7 @@ async def _project_context_for_scope(
 
 
 async def _requester_user_id_for_chat(user: dict[str, Any], scope: ChatScope) -> str:
-    if scope.kind == "project":
+    if scope.kind in {"project", "freezone"}:
         project_ctx = await _project_context_for_scope(user, scope)
         if project_ctx is not None and project_ctx.requester_user_id:
             return project_ctx.requester_user_id
@@ -1238,11 +1238,49 @@ async def _requester_user_id_for_chat(user: dict[str, Any], scope: ChatScope) ->
     return str(user.get("username") or "").strip()
 
 
+def _assistant_surface_code(scope: ChatScope) -> str:
+    return "freezone_assistant" if _is_freezone_scope(scope) else "assistant"
+
+
+async def _assistant_surface_access(
+    *,
+    user: dict[str, Any],
+    scope: ChatScope,
+) -> dict[str, Any] | None:
+    user_id = await _requester_user_id_for_chat(user, scope)
+    surface_code = _assistant_surface_code(scope)
+    items = await get_product_surface_access().get_effective_access(user_id)
+    return next(
+        (
+            item
+            for item in items
+            if str(item.get("surface_code") or "") == surface_code
+        ),
+        None,
+    )
+
+
+async def _assistant_surface_available(
+    *,
+    user: dict[str, Any],
+    scope: ChatScope,
+) -> bool:
+    access = await _assistant_surface_access(user=user, scope=scope)
+    return bool(access and access.get("available") is True)
+
+
 async def _require_ai_assistant_access(
     *,
     user: dict[str, Any],
     scope: ChatScope,
 ) -> None:
+    access = await _assistant_surface_access(user=user, scope=scope)
+    if not access or access.get("available") is not True:
+        message = str(
+            (access or {}).get("unavailable_message")
+            or "虾导功能暂未开放"
+        )
+        raise HTTPException(status_code=403, detail=message)
     user_id = await _requester_user_id_for_chat(user, scope)
     await get_usage_meter().require_feature_credit_balance(
         user_id=user_id,
@@ -2625,7 +2663,10 @@ async def chat_ws(websocket: WebSocket) -> None:
     # Do not pre-warm the default home scope on connect. The React client often
     # immediately sends scope.set for the active project; warming home first
     # creates a worker that is then rotated and logs a noisy initialize timeout.
-    if _should_prewarm_on_ws_connect(current_scope):
+    if (
+        _should_prewarm_on_ws_connect(current_scope)
+        and await _assistant_surface_available(user=user, scope=current_scope)
+    ):
         await chat_service.prewarm_chat_backend(
             username,
             project=current_scope.id if current_scope.kind == "project" else None,
@@ -2649,12 +2690,21 @@ async def chat_ws(websocket: WebSocket) -> None:
                 await _sync_running_agent_scope(username, current_scope)
                 # Switching project rotates the worker; warm the new scope now so
                 # the first message in the project doesn't cold-start.
-                await chat_service.prewarm_chat_backend(
-                    username,
-                    project=current_scope.id if current_scope.kind in {"project", "freezone"} else None,
-                    surface="freezone" if _is_freezone_scope(current_scope) else None,
-                    agent_id=current_scope.agent_id if _is_freezone_scope(current_scope) else None,
-                )
+                if await _assistant_surface_available(user=user, scope=current_scope):
+                    await chat_service.prewarm_chat_backend(
+                        username,
+                        project=(
+                            current_scope.id
+                            if current_scope.kind in {"project", "freezone"}
+                            else None
+                        ),
+                        surface="freezone" if _is_freezone_scope(current_scope) else None,
+                        agent_id=(
+                            current_scope.agent_id
+                            if _is_freezone_scope(current_scope)
+                            else None
+                        ),
+                    )
                 continue
 
             if event_type == "canvas.command.result":

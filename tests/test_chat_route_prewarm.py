@@ -1005,11 +1005,21 @@ async def test_resolve_clarification_tool_result_persists_submitted_ui_event(mon
 async def test_ai_assistant_access_check_uses_chat_feature_key(monkeypatch) -> None:
     seen = {}
 
+    class FakeProductSurfaceAccess:
+        async def get_effective_access(self, user_id):
+            assert user_id == "usr_1"
+            return [{"surface_code": "assistant", "available": True}]
+
     class FakeUsageMeter:
         async def require_feature_credit_balance(self, **kwargs):
             seen.update(kwargs)
             return {"allowed": True}
 
+    monkeypatch.setattr(
+        chat_route,
+        "get_product_surface_access",
+        lambda: FakeProductSurfaceAccess(),
+    )
     monkeypatch.setattr(chat_route, "get_usage_meter", lambda: FakeUsageMeter())
 
     await chat_route._require_ai_assistant_access(
@@ -1022,3 +1032,75 @@ async def test_ai_assistant_access_check_uses_chat_feature_key(monkeypatch) -> N
     assert seen["project_id"] == ""
     assert seen["resource_kind"] == "chat"
     assert seen["metadata"]["scope"] == {"kind": "home", "id": None}
+
+
+@pytest.mark.anyio
+async def test_ai_assistant_access_check_rejects_hidden_surface_before_credit_check(
+    monkeypatch,
+) -> None:
+    credit_checked = False
+
+    class FakeProductSurfaceAccess:
+        async def get_effective_access(self, user_id):
+            assert user_id == "usr_1"
+            return [
+                {
+                    "surface_code": "assistant",
+                    "available": False,
+                    "unavailable_message": "虾导功能暂未开放",
+                }
+            ]
+
+    class FakeUsageMeter:
+        async def require_feature_credit_balance(self, **kwargs):
+            nonlocal credit_checked
+            credit_checked = True
+
+    monkeypatch.setattr(
+        chat_route,
+        "get_product_surface_access",
+        lambda: FakeProductSurfaceAccess(),
+    )
+    monkeypatch.setattr(chat_route, "get_usage_meter", lambda: FakeUsageMeter())
+
+    with pytest.raises(chat_route.HTTPException) as exc_info:
+        await chat_route._require_ai_assistant_access(
+            user={"id": "usr_1", "username": "alice"},
+            scope=ChatScope(kind="home"),
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == "虾导功能暂未开放"
+    assert credit_checked is False
+
+
+@pytest.mark.anyio
+async def test_freezone_assistant_uses_its_own_product_surface(monkeypatch) -> None:
+    seen = {}
+
+    class FakeProductSurfaceAccess:
+        async def get_effective_access(self, user_id):
+            seen["user_id"] = user_id
+            return [
+                {"surface_code": "assistant", "available": False},
+                {"surface_code": "freezone_assistant", "available": True},
+            ]
+
+    async def fake_requester_user_id(user, scope):
+        assert scope.kind == "freezone"
+        return "project-user"
+
+    monkeypatch.setattr(
+        chat_route,
+        "get_product_surface_access",
+        lambda: FakeProductSurfaceAccess(),
+    )
+    monkeypatch.setattr(chat_route, "_requester_user_id_for_chat", fake_requester_user_id)
+
+    available = await chat_route._assistant_surface_available(
+        user={"id": "usr_1", "username": "alice"},
+        scope=ChatScope(kind="freezone", id="project-a"),
+    )
+
+    assert available is True
+    assert seen["user_id"] == "project-user"

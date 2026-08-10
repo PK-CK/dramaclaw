@@ -1383,7 +1383,7 @@ async def generate_single_portrait_async(
             ctx,
             product_surface="mainline",
             task_type="character_portrait",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=scope,
             payload={
@@ -1718,7 +1718,7 @@ async def generate_identity_portrait_async(
             ctx,
             product_surface="mainline",
             task_type="character_portrait",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=scope,
             payload={
@@ -1848,7 +1848,7 @@ async def generate_identity_image_async(
             ctx,
             product_surface="mainline",
             task_type="identity_image",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=scope,
             payload={

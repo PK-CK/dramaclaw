@@ -1150,7 +1150,7 @@ async def _start_scene_reference_task(
             ctx,
             product_surface="mainline",
             task_type="scene_reference_asset",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=scope,
             payload={

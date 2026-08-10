@@ -204,3 +204,29 @@ export function normalizeCanvasCommandNodeData(
 
   return next;
 }
+
+/**
+ * Apply defaults that belong specifically to assistant-created canvas nodes.
+ *
+ * Ordinary audio nodes intentionally keep the stable project/character voice
+ * behavior. The assistant can create ready-to-run speech nodes without a
+ * reference recording, so its create boundary defaults omitted speech fields
+ * to the preset system voice instead of changing the global node definition.
+ */
+export function normalizeCanvasCommandCreateNodeData(
+  nodeType: CanvasNodeType | undefined,
+  data: Partial<CanvasNodeData> | undefined,
+): Partial<CanvasNodeData> {
+  const next = normalizeCanvasCommandNodeData(nodeType, data);
+  if (nodeType !== CANVAS_NODE_TYPES.audio || next.audioKind === "music") {
+    return next;
+  }
+  if (next.speechMode === undefined) {
+    next.speechMode = "preset";
+  }
+  if (next.speechMode === "preset") {
+    next.presetModel ??= "edge-tts";
+    next.presetVoice ??= "Serena";
+  }
+  return next;
+}

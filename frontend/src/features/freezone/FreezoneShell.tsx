@@ -39,12 +39,12 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { currentCanvasParam } from "@/lib/app-router";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
+import { surfaceAccess, useProductSurfaces } from "@/lib/queries/product-surfaces";
 import { api } from "@/lib/api";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
   SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
 } from "@/features/superchat/use-superchat";
-import { XIADAO_ENABLED } from "@/lib/xiadao-flag";
 import { mcpDirectCanvasApplyEnabled } from "@/lib/runtime-config";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
 import type { ChatAttachment } from "@/features/superchat/types";
@@ -864,7 +864,10 @@ export function FreezoneShell({
   const [chatOpen, setChatOpen] = useState(loadChatOpen);
   const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
   const [pendingChatNodeMentions, setPendingChatNodeMentions] = useState<string[]>([]);
-  const showChatDock = XIADAO_ENABLED;
+  const productSurfaces = useProductSurfaces();
+  const showChatDock = Boolean(
+    surfaceAccess(productSurfaces.data, "freezone_assistant")?.available,
+  );
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 from pathlib import Path
@@ -13,29 +12,6 @@ import httpx
 from novelvideo.ports import get_usage_meter
 from novelvideo.shared.billing_errors import is_insufficient_credits_error
 from novelvideo.generators.tts_generator import TTSResult
-
-_TTS_NETWORK_ATTEMPTS = 3
-_TRANSIENT_TTS_STATUS_CODES = {408, 425, 429, 500, 502, 503, 504}
-_TRANSIENT_TTS_ERROR_MARKERS = (
-    "bad_response_body",
-    "connection reset",
-    "connectionreset",
-    "read fal tts audio failed",
-    "read tcp",
-    "temporarily unavailable",
-    "timeout",
-    "timed out",
-)
-
-
-def _is_transient_tts_error(exc: Exception) -> bool:
-    if isinstance(exc, httpx.HTTPStatusError):
-        return exc.response.status_code in _TRANSIENT_TTS_STATUS_CODES
-    if isinstance(exc, (httpx.TransportError, httpx.TimeoutException)):
-        return True
-    detail = str(exc).lower()
-    return any(marker in detail for marker in _TRANSIENT_TTS_ERROR_MARKERS)
-
 
 async def _reserve_tts_model_call(model: str, *, source: str) -> str:
     return await get_usage_meter().reserve_current_model_call_credit(
@@ -297,71 +273,63 @@ class IndexTTS2FalClient:
             "metadata": metadata,
         }
 
-        for attempt in range(_TTS_NETWORK_ATTEMPTS):
-            try:
-                async with httpx.AsyncClient(
-                    timeout=self.timeout_seconds, follow_redirects=True
-                ) as client:
-                    response = await client.post(
-                        endpoint,
-                        headers={
-                            "Authorization": f"Bearer {self.api_key}",
-                            "Content-Type": "application/json",
-                        },
-                        json=body,
-                    )
-                    self._last_provider_request_id = (
-                        response.headers.get("x-request-id")
-                        or response.headers.get("x-newapi-request-id")
-                        or response.headers.get("x-oneapi-request-id")
-                        or ""
-                    )
-                    response.raise_for_status()
-                    content_type = response.headers.get("content-type", "")
-                    if "application/json" in content_type.lower():
-                        payload = response.json()
-                        self._last_provider_request_id = (
-                            self._last_provider_request_id
-                            or str(
-                                payload.get("request_id") or payload.get("requestId") or ""
-                            ).strip()
-                        )
-                        self._last_provider_response_id = str(payload.get("id") or "").strip()
-                        result_url = _extract_audio_url(payload)
-                        if not result_url:
-                            return TTSResult(
-                                success=False,
-                                error="DramaClawAPI IndexTTS2 response missing audio bytes or URL",
-                            )
-                        audio_response = await client.get(result_url)
-                        audio_response.raise_for_status()
-                        output_path.write_bytes(audio_response.content)
-                    else:
-                        output_path.write_bytes(response.content)
-
-                if not output_path.exists() or output_path.stat().st_size <= 0:
-                    return TTSResult(
-                        success=False,
-                        error="IndexTTS2 audio file was not created",
-                    )
-
-                return TTSResult(
-                    success=True,
-                    audio_path=str(output_path),
-                    duration_seconds=await _audio_duration_seconds(output_path),
+        try:
+            async with httpx.AsyncClient(
+                timeout=self.timeout_seconds, follow_redirects=True
+            ) as client:
+                response = await client.post(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
                 )
-            except Exception as exc:
-                if is_insufficient_credits_error(exc):
-                    raise
-                if (
-                    attempt + 1 < _TTS_NETWORK_ATTEMPTS
-                    and _is_transient_tts_error(exc)
-                ):
-                    await asyncio.sleep(2**attempt)
-                    continue
-                detail = str(exc) or repr(exc) or exc.__class__.__name__
+                self._last_provider_request_id = (
+                    response.headers.get("x-request-id")
+                    or response.headers.get("x-newapi-request-id")
+                    or response.headers.get("x-oneapi-request-id")
+                    or ""
+                )
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if "application/json" in content_type.lower():
+                    payload = response.json()
+                    self._last_provider_request_id = (
+                        self._last_provider_request_id
+                        or str(
+                            payload.get("request_id") or payload.get("requestId") or ""
+                        ).strip()
+                    )
+                    self._last_provider_response_id = str(payload.get("id") or "").strip()
+                    result_url = _extract_audio_url(payload)
+                    if not result_url:
+                        return TTSResult(
+                            success=False,
+                            error="DramaClawAPI IndexTTS2 response missing audio bytes or URL",
+                        )
+                    audio_response = await client.get(result_url)
+                    audio_response.raise_for_status()
+                    output_path.write_bytes(audio_response.content)
+                else:
+                    output_path.write_bytes(response.content)
+
+            if not output_path.exists() or output_path.stat().st_size <= 0:
                 return TTSResult(
                     success=False,
-                    error=f"{exc.__class__.__name__}: {detail}",
+                    error="IndexTTS2 audio file was not created",
                 )
-        return TTSResult(success=False, error="IndexTTS2 generation failed after retries")
+
+            return TTSResult(
+                success=True,
+                audio_path=str(output_path),
+                duration_seconds=await _audio_duration_seconds(output_path),
+            )
+        except Exception as exc:
+            if is_insufficient_credits_error(exc):
+                raise
+            detail = str(exc) or repr(exc) or exc.__class__.__name__
+            return TTSResult(
+                success=False,
+                error=f"{exc.__class__.__name__}: {detail}",
+            )

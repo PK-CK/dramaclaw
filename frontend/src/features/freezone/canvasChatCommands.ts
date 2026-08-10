@@ -43,6 +43,7 @@ import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetPr
 import {
   isBeatContextAgentEditablePatch,
   normalizeBeatContextAgentPatch,
+  normalizeCanvasCommandCreateNodeData,
   normalizeCanvasCommandNodeData,
 } from "@/features/freezone/canvasCommandNodeData";
 import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
@@ -483,7 +484,6 @@ const TERMINAL_WORKFLOW_ACTION_STATUSES = new Set<WorkflowRunActionStatus>([
 const WORKFLOW_CAPACITY_POLL_INTERVAL_MS = 2_000;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
-  image: 3,
   video: 3,
   world: 1,
   ffmpeg: 1,
@@ -497,7 +497,6 @@ type WorkflowActionSlotWaiter = {
 const workflowActionSlotWaiters: WorkflowActionSlotWaiter[] = [];
 const activeWorkflowActionsByLane: Record<WorkflowActionLane, number> = {
   default: 0,
-  image: 0,
   video: 0,
   world: 0,
   ffmpeg: 0,
@@ -515,7 +514,10 @@ export function cancelCanvasWorkflowExecution(canvasId?: string | null): void {
 }
 
 function workflowActionLane(action: string): WorkflowActionLane {
-  if (action === "generate_image") return "image";
+  // Stable workers consume image generation from the default lane. Keeping
+  // workflow capacity checks on the same lane prevents admission against an
+  // image queue that deployed workers do not consume.
+  if (action === "generate_image") return "default";
   if (action === "generate_video" || action === "generate_text_video") return "video";
   if (action === "generate_3gs_world") return "world";
   if (action === "auto_compose_video") return "ffmpeg";
@@ -2751,7 +2753,7 @@ async function executeQueuedNodeActions(
         counts[lane] += 1;
         return counts;
       },
-      { default: 0, image: 0, video: 0, world: 0, ffmpeg: 0 },
+      { default: 0, video: 0, world: 0, ffmpeg: 0 },
     );
     const actionByNodeId = new Map(
       pendingActions.map((action) => [action.nodeId, action]),
@@ -3577,7 +3579,7 @@ function applyCanvasChatCommandsInternal(
               });
               break;
             }
-            const data = normalizeCanvasCommandNodeData(command.node_type, command.data);
+            const data = normalizeCanvasCommandCreateNodeData(command.node_type, command.data);
             const nodeId = useCanvasStore.getState().addNode(
               command.node_type,
               command.position ?? fallbackCreatePosition(),
@@ -3606,7 +3608,7 @@ function applyCanvasChatCommandsInternal(
             const position = useCanvasStore.getState().findNodePosition(sourceId, DEFAULT_NODE_WIDTH, 320);
             const data = inheritMainlineFields(
               sourceNode as { data: MainlineFieldsSource },
-              normalizeCanvasCommandNodeData(nodeType, command.data),
+              normalizeCanvasCommandCreateNodeData(nodeType, command.data),
             );
             const nodeId = useCanvasStore.getState().addNode(nodeType, position, data);
             if (command.client_id) clientIdMap.set(command.client_id, nodeId);

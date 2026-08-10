@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyOptimisticWorkflowRunUpdate,
+  aggregateChatTaskBatchItems,
+  chatTaskBatchStatusSummary,
   isStatusBarWorkflowContinuable,
   mergeWorkflowRunUpdate,
   resolveWorkflowRunDisplayCompletion,
@@ -168,6 +170,53 @@ describe("selectChatTaskItems", () => {
 
     expect(result.map(({ task: item }) => item.task_key)).toEqual(["first", "second"]);
     expect(result.every((item) => item.nodeId === null && item.nodeLabel === null)).toBe(true);
+  });
+
+  it("collapses queued tasks with the same batch id into one status item", () => {
+    const first = task({
+      task_key: "grid-1",
+      progress: 1,
+      status: "completed",
+      metadata: { batch_id: "sketch-batch-1", batch_size: "2" },
+    });
+    const second = task({
+      task_key: "grid-2",
+      progress: 0.5,
+      status: "running",
+      metadata: { batch_id: "sketch-batch-1", batch_size: "2" },
+    });
+
+    const result = aggregateChatTaskBatchItems([
+      { task: first, nodeId: null, nodeLabel: null },
+      { task: second, nodeId: null, nodeLabel: null },
+    ]);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].task).toMatchObject({
+      status: "running",
+      progress: 0.75,
+      current_task: "批次进度 1/2 · 运行 1",
+    });
+  });
+
+  it("shows submitted and waiting counts for a partially admitted agent batch", () => {
+    const items = [1, 2, 3].map((beat) => ({
+      task: task({
+        task_key: `frame-${beat}`,
+        status: "running",
+        metadata: { batch_id: "first-frame-batch", batch_size: "9" },
+      }),
+      nodeId: null,
+      nodeLabel: null,
+    }));
+
+    const result = aggregateChatTaskBatchItems(items);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].task.current_task).toBe("批次进度 0/9 · 运行 3 · 等待 6");
+    expect(chatTaskBatchStatusSummary(result)).toBe(
+      "批次进度 0/9 · 运行 3 · 等待 6",
+    );
   });
 });
 

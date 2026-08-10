@@ -30,13 +30,17 @@ import {
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
   hasCurrentWorkflowResult,
 } from "@/features/freezone/canvasChatCommands";
+import {
+  taskBatchId,
+  taskBatchSize,
+} from "@/features/superchat/task-notification-batch";
 import { recoverableWorkflowNodeIds } from "@/features/freezone/WorkflowRunRecoveryBar";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { displayLabel, isActive, isTerminal } from "@/task-center/derivations";
 import { useTaskCenterStore } from "@/task-center/store";
-import type { TaskState } from "@/task-center/types";
+import type { TaskState, TaskStatus } from "@/task-center/types";
 
 const RECENT_COMPLETED_MS = 5_000;
 const RECENT_FAILED_MS = 60_000;
@@ -53,6 +57,76 @@ export interface ChatTaskItem {
   task: TaskState;
   nodeId: string | null;
   nodeLabel: string | null;
+}
+
+function aggregateChatTaskBatch(items: ChatTaskItem[]): ChatTaskItem {
+  const expected = Math.max(...items.map(({ task }) => taskBatchSize(task)));
+  const representative = items[0];
+  const active = items.filter(({ task }) => isActive(task));
+  const completed = items.filter(({ task }) => task.status === "completed").length;
+  const failed = items.filter(({ task }) => task.status === "failed").length;
+  const cancelled = items.filter(({ task }) => task.status === "cancelled").length;
+  const settled = completed + failed + cancelled;
+  const waiting = Math.max(expected - items.length, 0);
+  let status: TaskStatus;
+  if (active.some(({ task }) => task.status === "running")) status = "running";
+  else if (active.length > 0 || items.length < expected) status = "queued";
+  else if (failed > 0) status = "failed";
+  else if (cancelled > 0) status = "cancelled";
+  else status = "completed";
+
+  const progress = Math.min(
+    1,
+    items.reduce(
+      (sum, { task }) => sum + (task.status === "completed" ? 1 : task.progress || 0),
+      0,
+    ) / expected,
+  );
+  return {
+    ...representative,
+    task: {
+      ...representative.task,
+      status,
+      progress,
+      current_task: [
+        `批次进度 ${settled}/${expected}`,
+        active.length > 0 ? `运行 ${active.length}` : "",
+        waiting > 0 ? `等待 ${waiting}` : "",
+      ].filter(Boolean).join(" · "),
+      error: failed > 0 ? `${failed}/${expected} 个任务失败` : representative.task.error,
+    },
+  };
+}
+
+export function aggregateChatTaskBatchItems(items: ChatTaskItem[]): ChatTaskItem[] {
+  const standalone: ChatTaskItem[] = [];
+  const batches = new Map<string, ChatTaskItem[]>();
+  for (const item of items) {
+    const batchId = taskBatchId(item.task);
+    if (!batchId || taskBatchSize(item.task) <= 1) {
+      standalone.push(item);
+      continue;
+    }
+    const batch = batches.get(batchId) ?? [];
+    batch.push(item);
+    batches.set(batchId, batch);
+  }
+  return [
+    ...standalone,
+    ...[...batches.values()].map(aggregateChatTaskBatch),
+  ].sort((left, right) => {
+    const activeDelta = Number(isActive(right.task)) - Number(isActive(left.task));
+    if (activeDelta) return activeDelta;
+    return Date.parse(right.task.updated_at) - Date.parse(left.task.updated_at);
+  });
+}
+
+export function chatTaskBatchStatusSummary(items: ChatTaskItem[]): string | null {
+  const activeBatch = items.find(({ task }) =>
+    isActive(task) && taskBatchSize(task) > 1
+  );
+  const summary = activeBatch?.task.current_task?.trim();
+  return summary || null;
 }
 
 export type ChatTaskStatusScope = "canvas" | "project";
@@ -282,6 +356,24 @@ export function selectChatTaskItems(
 ): ChatTaskItem[] {
   if (scope === "canvas" && !canvasId) return [];
 
+  const taskList = [...tasks];
+  const activeBatchIds = new Set(
+    taskList
+      .filter(isActive)
+      .map(taskBatchId)
+      .filter(Boolean),
+  );
+  const terminalBatchWindows = new Map<string, { latest: number; failed: boolean }>();
+  for (const task of taskList) {
+    const batchId = taskBatchId(task);
+    if (!batchId || !isTerminal(task)) continue;
+    const existing = terminalBatchWindows.get(batchId) ?? { latest: 0, failed: false };
+    terminalBatchWindows.set(batchId, {
+      latest: Math.max(existing.latest, terminalTimestamp(task)),
+      failed: existing.failed || task.status === "failed",
+    });
+  }
+
   const nodeIds = new Set(nodes.map((node) => node.id));
   const nodesByTaskKey = new Map<string, CanvasNode>();
   for (const node of nodes) {
@@ -292,7 +384,7 @@ export function selectChatTaskItems(
   }
 
   const items: ChatTaskItem[] = [];
-  for (const task of tasks) {
+  for (const task of taskList) {
     const metadata = task.metadata ?? {};
     const mappedNode = nodesByTaskKey.get(task.task_key) ?? null;
     const metadataCanvasId = nonEmptyString(metadata.canvas_id);
@@ -304,8 +396,22 @@ export function selectChatTaskItems(
       Boolean(metadataNodeId && nodeIds.has(metadataNodeId));
     if (scope === "canvas" && !belongsToCanvas) continue;
 
+    const batchId = taskBatchId(task);
+    const batchWindow = batchId ? terminalBatchWindows.get(batchId) : undefined;
+    const batchVisible = Boolean(
+      batchId && (
+        activeBatchIds.has(batchId) ||
+        (
+          batchWindow &&
+          now - batchWindow.latest <= (
+            batchWindow.failed ? RECENT_FAILED_MS : RECENT_COMPLETED_MS
+          )
+        )
+      ),
+    );
     const visible =
       isActive(task) ||
+      batchVisible ||
       (
         isTerminal(task) &&
         now - terminalTimestamp(task) <= (
@@ -327,11 +433,12 @@ export function selectChatTaskItems(
     });
   }
 
-  return items.sort((left, right) => {
+  const sorted = items.sort((left, right) => {
     const activeDelta = Number(isActive(right.task)) - Number(isActive(left.task));
     if (activeDelta) return activeDelta;
     return Date.parse(right.task.updated_at) - Date.parse(left.task.updated_at);
   });
+  return aggregateChatTaskBatchItems(sorted);
 }
 
 function taskProgress(task: TaskState): number {
@@ -521,6 +628,7 @@ export function ChatTaskStatusBar({
   const failedCount = items.filter(({ task }) => task.status === "failed").length;
   const completedCount = items.filter(({ task }) => task.status === "completed").length;
   const leading = activeItems[0] ?? items[0] ?? null;
+  const batchStatusSummary = chatTaskBatchStatusSummary(items);
   const workflowActions = workflowRun?.actions ?? [];
   const workflowCounts = workflowStatusCounts(workflowActions, workflowTasksByKey);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -570,7 +678,9 @@ export function ChatTaskStatusBar({
               })
             : null,
         ].filter(Boolean).join(" · ")
-    : activeItems.length
+    : batchStatusSummary
+      ? batchStatusSummary
+      : activeItems.length
       ? [
           runningCount
             ? t("taskCenter.chatStatus.running", { count: runningCount })

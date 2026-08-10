@@ -118,14 +118,6 @@ describe("canvas chat commands", () => {
         user_active: 0,
         user_remaining: 3,
       },
-      image: {
-        limit: 9,
-        active: 0,
-        remaining: 9,
-        user_limit: 9,
-        user_active: 0,
-        user_remaining: 9,
-      },
       video: {
         limit: 4,
         active: 0,
@@ -661,6 +653,74 @@ describe("canvas chat commands", () => {
     expect(video?.data).not.toHaveProperty("video_prompt");
     expect(compose?.data).toMatchObject({ title: "new compose title" });
     expect(compose?.data).not.toHaveProperty("prompt");
+  });
+
+  it("defaults only assistant-created speech nodes to the preset system voice", () => {
+    const sourceId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.textAnnotation,
+      { x: 0, y: 0 },
+      { content: "旁白脚本" },
+    );
+    const existingAudioId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.audio,
+      { x: 0, y: 320 },
+      { text: "旧旁白", speechMode: "clone", voiceRef: { scope: "project_narrator" } },
+    );
+
+    const result = applyCanvasChatCommands([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "create_node",
+            client_id: "preset-audio",
+            node_type: CANVAS_NODE_TYPES.audio,
+            data: { text: "系统旁白" },
+          },
+          {
+            type: "add_next_node",
+            source_node_id: sourceId,
+            client_id: "clone-audio",
+            node_type: CANVAS_NODE_TYPES.audio,
+            data: {
+              text: "指定声线旁白",
+              speechMode: "clone",
+              voiceRef: { scope: "project_narrator" },
+            },
+          },
+          {
+            type: "update_node_data",
+            node_id: existingAudioId,
+            data: { text: "更新后的旁白" },
+          },
+        ],
+      },
+    ]);
+
+    const state = useCanvasStore.getState();
+    const presetAudio = state.nodes.find((node) => node.id === result.createdNodeIds[0]);
+    const cloneAudio = state.nodes.find((node) => node.id === result.createdNodeIds[1]);
+    const existingAudio = state.nodes.find((node) => node.id === existingAudioId);
+
+    expect(result.errors).toEqual([]);
+    expect(presetAudio?.data).toMatchObject({
+      speechMode: "preset",
+      presetModel: "edge-tts",
+      presetVoice: "Serena",
+    });
+    expect(cloneAudio?.data).toMatchObject({
+      speechMode: "clone",
+      voiceRef: { scope: "project_narrator" },
+    });
+    expect(cloneAudio?.data).not.toHaveProperty("presetModel");
+    expect(cloneAudio?.data).not.toHaveProperty("presetVoice");
+    expect(existingAudio?.data).toMatchObject({
+      text: "更新后的旁白",
+      speechMode: "clone",
+      voiceRef: { scope: "project_narrator" },
+    });
+    expect(existingAudio?.data).not.toHaveProperty("presetModel");
+    expect(existingAudio?.data).not.toHaveProperty("presetVoice");
   });
 
   it("ignores legacy role on add_next_node auto connections", () => {
@@ -6181,14 +6241,6 @@ describe("canvas chat commands", () => {
         user_limit: 3,
         user_active: 0,
         user_remaining: 3,
-      },
-      image: {
-        limit: 9,
-        active: 0,
-        remaining: 9,
-        user_limit: 9,
-        user_active: 0,
-        user_remaining: 9,
       },
       video: {
         limit: 4,

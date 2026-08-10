@@ -124,7 +124,7 @@ export function AssetBoardAudioGenForm({
   const musicLengthMs =
     typeof data.musicLengthMs === 'number' ? data.musicLengthMs : DEFAULT_MUSIC_LENGTH_MS;
   const currentVoiceRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
-  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
+  const speechMode = data.speechMode ?? 'clone';
   // 已有产物 → 提交键语义是「重新生成」（与图片/视频详情口径一致）。
   const hasAudio = typeof data.audioUrl === 'string' && data.audioUrl.length > 0;
 

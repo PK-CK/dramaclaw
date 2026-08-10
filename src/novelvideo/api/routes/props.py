@@ -299,7 +299,7 @@ async def generate_prop_reference(
             ctx,
             product_surface="mainline",
             task_type="prop_reference_asset",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=scope,
             payload={

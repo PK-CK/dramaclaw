@@ -88,7 +88,6 @@ _HUIMENG_IMAGE_MAX_POLLS = 290
 HUIMENG_IMAGE2_SINGLE_CELL_SELECTION = "huimeng_gpt_image2"
 HUIMENG_IMAGE2_SINGLE_CELL_REASON = "huimeng-image-2-1k-only"
 SINGLE_CELL_RENDER_MODE_KEY = "1x1_2-3"
-SELECTED_REGEN_BATCH_SIZE = 3
 SINGLE_CELL_RENDER_MODE_BY_ASPECT = {
     "1:1": "1x1_1-1",
     "9:16": "1x1_9-16",
@@ -7574,11 +7573,10 @@ async def regenerate_selected_beats(
         return grid_idx, result
 
     indexed_results: list[tuple[int, GridGenerationResult]] = []
-    for batch_start in range(0, len(jobs), SELECTED_REGEN_BATCH_SIZE):
-        batch = jobs[batch_start : batch_start + SELECTED_REGEN_BATCH_SIZE]
-        indexed_results.extend(await asyncio.gather(*(generate_job(job) for job in batch)))
+    for completed, job in enumerate(jobs, start=1):
+        indexed_results.append(await generate_job(job))
         if progress_callback:
-            progress_callback(min(batch_start + len(batch), len(jobs)), len(jobs))
+            progress_callback(completed, len(jobs))
 
     indexed_results.sort(key=lambda item: item[0])
     results = [result for _grid_idx, result in indexed_results]

@@ -197,7 +197,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
     (data as { mainline_context?: unknown }).mainline_context,
   );
   const currentVoiceRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
-  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
+  const speechMode = data.speechMode ?? 'clone';
 
   // 上传一份本地音频到后端 freezone — 复用通用 upload 端点（后端不区分 mime）。
   // 上传成功后落 audioUrl/sourceFileName 进 store，AudioOperationsPanel 那边

@@ -444,7 +444,7 @@ async def test_regenerate_selected_beats_preserves_standalone_zero_beat_number(
 
 
 @pytest.mark.asyncio
-async def test_regenerate_selected_beats_runs_three_images_per_batch(
+async def test_regenerate_selected_beats_runs_images_sequentially(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -492,12 +492,20 @@ async def test_regenerate_selected_beats_runs_three_images_per_batch(
         ),
     )
 
-    assert max_active == 3
+    assert max_active == 1
     assert len(results) == 7
     assert [Path(result.grid_image_path or "").name for result in results] == [
         f"regen_1x1_2-3_g{index:02d}.png" for index in range(1, 8)
     ]
-    assert completed_batches == [(3, 7), (6, 7), (7, 7)]
+    assert completed_batches == [
+        (1, 7),
+        (2, 7),
+        (3, 7),
+        (4, 7),
+        (5, 7),
+        (6, 7),
+        (7, 7),
+    ]
 
 
 @pytest.mark.asyncio

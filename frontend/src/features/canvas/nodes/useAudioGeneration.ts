@@ -116,7 +116,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     .filter((segment) => segment.length > 0)
     .join('\n\n');
   const emotionPrompt = data.emotionPrompt ?? '';
-  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
+  const speechMode = data.speechMode ?? 'clone';
 
   const generate = useCallback(async (): Promise<{ audioUrl?: string }> => {
     if (isGenerating) return {};

@@ -22,9 +22,9 @@ export function taskBatchId(task: TaskState): string {
   return metadataString(task, "batch_id");
 }
 
-function taskBatchSize(task: TaskState): number {
+export function taskBatchSize(task: TaskState): number {
   const value = Number(metadataString(task, "batch_size"));
-  return Number.isInteger(value) && value > 1 && value <= 9 ? value : 0;
+  return Number.isInteger(value) && value > 1 && value <= 100 ? value : 0;
 }
 
 export function resolveChatTaskBatchSummary(
@@ -61,6 +61,8 @@ export function buildChatTaskBatchNotification(summary: ChatTaskBatchSummary): s
     ? "视频"
     : summary.taskType === "selected_regen"
       ? "首帧"
+      : summary.taskType === "sketch_grid_generation"
+        ? "草图网格"
       : "任务";
   if (summary.completed === summary.total) {
     const prefix = episodeLabel ? `${episodeLabel} ` : "";

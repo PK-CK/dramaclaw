@@ -261,7 +261,7 @@ async def test_freezone_image_edit_limit_exception_bubbles_to_global_handler(
     project_dir, _output_dir = _patch_freezone_project(monkeypatch, tmp_path)
     source = project_dir / "freezone" / "_uploads" / "source.png"
     _write_image(source)
-    _patch_limit_exceeded_enqueue(monkeypatch, queue_kind="image")
+    _patch_limit_exceeded_enqueue(monkeypatch, queue_kind="default")
 
     with pytest.raises(ProjectUserTaskLimitExceeded) as exc:
         await freezone_routes.freezone_outpaint(
@@ -272,7 +272,7 @@ async def test_freezone_image_edit_limit_exception_bubbles_to_global_handler(
             user={"username": "admin"},
         )
 
-    assert exc.value.queue_kind == "image"
+    assert exc.value.queue_kind == "default"
 
 
 @pytest.mark.asyncio

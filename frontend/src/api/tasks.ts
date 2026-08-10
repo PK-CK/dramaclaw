@@ -41,7 +41,7 @@ export interface TaskState {
   metadata?: Record<string, unknown> | null;
 }
 
-export type ProjectTaskQueueKind = "default" | "image" | "video" | "world" | "ffmpeg";
+export type ProjectTaskQueueKind = "default" | "video" | "world" | "ffmpeg";
 
 export interface ProjectTaskLaneLimits {
   limit: number | null;

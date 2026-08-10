@@ -707,11 +707,6 @@ async def _run_global_optimize_video_async(
         sorted_beats = sorted(beats, key=lambda beat: beat.get("beat_number", 0))
         updated_count = 0
         failure_messages: list[str] = []
-        consecutive_failures = 0
-        max_consecutive_failures = max(
-            1,
-            int(os.environ.get("GLOBAL_VIDEO_MAX_CONSECUTIVE_FAILURES", "3")),
-        )
         prev_prompt = None
 
         for index, beat in enumerate(sorted_beats):
@@ -755,19 +750,10 @@ async def _run_global_optimize_video_async(
                     keyframe_prompt=None,
                 )
                 updated_count += 1
-                consecutive_failures = 0
                 prev_prompt = prompt
             except Exception as exc:  # noqa: BLE001
                 failure_messages.append(f"Beat {beat_num}: {exc}")
-                consecutive_failures += 1
                 log(f"Beat {beat_num}: 生成失败 ({exc})")
-                if consecutive_failures >= max_consecutive_failures:
-                    log(
-                        "连续 "
-                        f"{consecutive_failures} 个 Beat 生成失败，提前停止全局优化，"
-                        "避免继续消耗模型调用"
-                    )
-                    break
 
         if updated_count == 0:
             error = f"全局优化失败：0/{len(sorted_beats)} 个 Beat 生成成功"

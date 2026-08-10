@@ -139,14 +139,13 @@ describe("Header runtime gating", () => {
     expect(screen.queryByText("Log out")).not.toBeInTheDocument();
   });
 
-  it("keeps the settings entry available in EE runtime", () => {
+  it("hides the settings entry in EE runtime", () => {
     runtimeState.isCe = false;
 
     renderHeader();
 
-    fireEvent.click(screen.getByLabelText("header.settings"));
-
-    expect(screen.getByRole("dialog")).toHaveTextContent("Settings dialog");
+    expect(screen.queryByLabelText("header.settings")).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
   it("purges user-scoped caches after logout so the next account can't see stale data", async () => {
