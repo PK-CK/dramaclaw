@@ -177,6 +177,34 @@ def test_falls_back_when_anchors_too_sparse(beats: list[dict]) -> None:
     )
 
 
+def test_missing_beats_skips_existing_artifacts(tmp_path) -> None:
+    """已有产物的 beat 必须被跳过——重出既花钱，又往图片池多叠一版历史。"""
+    from novelvideo.batch_pipeline.steps import Runtime, _missing_beats
+    from novelvideo.batch_pipeline.models import PipelineState
+
+    beats = [{"beat_number": i} for i in range(1, 6)]
+    sketches = tmp_path / "sketches" / "ep001"
+    frames = tmp_path / "frames" / "ep001"
+    sketches.mkdir(parents=True)
+    frames.mkdir(parents=True)
+    for number in (1, 2, 4):
+        (sketches / f"beat_{number:02d}.png").write_bytes(b"x")
+    # 空文件视同缺失：出图失败留下的 0 字节文件不能算数
+    (sketches / "beat_03.png").write_bytes(b"")
+    for number in (1, 2, 3, 4, 5):
+        (frames / f"beat_{number:02d}.png").write_bytes(b"x")
+
+    rt = Runtime(
+        ctx=None,  # type: ignore[arg-type]
+        episode=1,
+        output_dir=str(tmp_path),
+        state=PipelineState(project="p", episode=1),
+        log=lambda *a, **k: None,
+    )
+    assert _missing_beats(rt, beats, "sketch") == [3, 5]
+    assert _missing_beats(rt, beats, "frame") == []
+
+
 def test_empty_inputs_return_empty() -> None:
     assert assign_beats([], [{"beat_number": 1}]) == []
     assert assign_beats(parse_scene_headings(SCRIPT), []) == []

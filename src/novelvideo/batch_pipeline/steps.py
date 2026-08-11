@@ -411,10 +411,73 @@ async def run_match_scenes(rt: Runtime) -> dict[str, Any]:
 # ── 第 3 步：批量草图（闸门 2）───────────────────────────────────────────
 
 
-async def run_sketches(rt: Runtime) -> dict[str, Any]:
-    from novelvideo.api.routes.generation import generate_sketches
-    from novelvideo.api.schemas import SketchGenerateRequest
+def _missing_beats(rt: Runtime, beats: list[dict[str, Any]], kind: str) -> list[int]:
+    """挑出还没有产物的 beat。
 
+    kind 取 ``sketch`` 或 ``frame``——分别对应 ``sketches/epNNN/beat_NN.png``
+    与 ``frames/epNNN/beat_NN.png``。已经有图的一律跳过：重出一遍既花钱，
+    又会往图片池里多叠一版历史，正是要消掉的浪费。
+    """
+    from novelvideo.utils.path_resolver import PathResolver
+
+    paths = PathResolver(rt.output_dir, rt.episode)
+    missing: list[int] = []
+    for beat in beats:
+        number = int(beat.get("beat_number") or 0)
+        if number <= 0:
+            continue
+        target = paths.sketch(number) if kind == "sketch" else paths.frame(number)
+        if not target.exists() or target.stat().st_size == 0:
+            missing.append(number)
+    return missing
+
+
+async def run_sketches(rt: Runtime) -> dict[str, Any]:
+    from novelvideo.api.routes.generation import generate_sketches, regenerate_sketches
+    from novelvideo.api.schemas import SketchGenerateRequest, SketchRegenerateRequest
+
+    _store, _script, beats = await _load_script(rt)
+    missing = _missing_beats(rt, beats, "sketch")
+
+    if not missing:
+        rt.log(f"全部 {len(beats)} 个 beat 都已有草图，跳过生成")
+        await _wait_for_gate(
+            rt,
+            GateId.SKETCH_SAMPLE,
+            {"scopes": [], "skipped": True, "hint": "草图已齐，抽查确认后继续渲染"},
+        )
+        return {"scopes": [], "skipped": True, "existing": len(beats)}
+
+    # 只缺一部分时走单 beat 再生，别为了几个缺口把整集重出一遍
+    if len(missing) < len(beats):
+        rt.log(f"{len(beats) - len(missing)} 个 beat 已有草图，只补 {len(missing)} 个：{missing}")
+        regen = SketchRegenerateRequest(
+            beat_indices=missing,
+            style=rt.options.get("style"),
+            model=str(rt.options.get("sketch_model") or "nanobanana"),
+            mode_key=str(rt.options.get("sketch_mode_key") or "1x1_2-3"),
+            image_generation_selection=rt.options.get("image_generation_selection"),
+        )
+        data = _require_ok(
+            await regenerate_sketches(rt.project, rt.episode, regen, rt.user), "草图补齐"
+        )
+        state = await _await_task(
+            rt,
+            "sketch_regen",
+            task_id=_task_id_of(data),
+            scope=str(data.get("scope") or "") or None,
+            label="草图补齐",
+        )
+        if state.status != "completed":
+            raise StepFailed(f"草图补齐失败：{state.error or state.status}")
+        await _wait_for_gate(
+            rt,
+            GateId.SKETCH_SAMPLE,
+            {"beats": missing, "hint": "抽查新补的草图，确认后继续渲染"},
+        )
+        return {"scopes": [], "filled": missing, "existing": len(beats) - len(missing)}
+
+    rt.log(f"{len(missing)} 个 beat 都没有草图，整集生成")
     body = SketchGenerateRequest(
         style=rt.options.get("style"),
         model=str(rt.options.get("sketch_model") or "nanobanana"),
@@ -470,10 +533,28 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
     from novelvideo.api.schemas import BeatsRegenerateRequest
 
     _store, _script, beats = await _load_script(rt)
-    beat_numbers = [int(b.get("beat_number") or 0) for b in beats]
+    missing = _missing_beats(rt, beats, "frame")
+
+    if not missing:
+        rt.log(f"全部 {len(beats)} 个 beat 都已有渲染图，跳过生成")
+        await _wait_for_gate(
+            rt,
+            GateId.RENDER_SAMPLE,
+            {
+                "beats": [],
+                "skipped": True,
+                "hint": "渲染图已齐，抽查确认后继续生成视频提示词",
+            },
+        )
+        return {"beats": 0, "skipped": True, "existing": len(beats)}
+
+    if len(missing) < len(beats):
+        rt.log(f"{len(beats) - len(missing)} 个 beat 已有渲染图，只补 {len(missing)} 个：{missing}")
+    else:
+        rt.log(f"{len(missing)} 个 beat 都没有渲染图，整集生成")
 
     body = BeatsRegenerateRequest(
-        beat_indices=beat_numbers,
+        beat_indices=missing,
         style=rt.options.get("style"),
         model=str(rt.options.get("render_model") or "nanobanana"),
         mode_key=str(rt.options.get("render_mode_key") or "1x1_2-3"),
@@ -483,7 +564,7 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
         await regenerate_beats(rt.project, rt.episode, body, rt.user), "批量渲染"
     )
     scope = str(data.get("scope") or (data.get("data") or {}).get("scope") or "")
-    rt.log(f"渲染任务已入队（{len(beat_numbers)} 个 beat）")
+    rt.log(f"渲染任务已入队（{len(missing)} 个 beat）")
     state = await _await_task(
         rt,
         "selected_regen",
@@ -499,11 +580,11 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
         rt,
         GateId.RENDER_SAMPLE,
         {
-            "beats": beat_numbers,
+            "beats": missing,
             "hint": "抽查画风、角色脸、背景是否一致，确认后继续生成视频提示词",
         },
     )
-    return {"beats": len(beat_numbers)}
+    return {"beats": len(missing), "existing": len(beats) - len(missing)}
 
 
 # ── 第 5 步：逐 beat 生成视频提示词（闸门 4）─────────────────────────────
