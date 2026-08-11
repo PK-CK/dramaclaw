@@ -149,6 +149,34 @@ def test_falls_back_to_keywords_without_script_lines(beats: list[dict]) -> None:
     assert sum(row["count"] for row in table["by_scene"]) == len(BEAT_SOURCE)
 
 
+def test_falls_back_when_anchors_too_sparse(beats: list[dict]) -> None:
+    """有原文但对不上（beat 文案被大改）时也要退回兜底，不能拿几个孤点硬分段。
+
+    覆盖率门槛是 max(3, (总数+1)//2)；这里把画面与台词全部换掉，
+    只留最后一个 beat 能对上，锚点数远低于门槛。
+    """
+    headings = parse_scene_headings(SCRIPT)
+    scrambled = [
+        {**beat, "visual_description": f"无关画面{i}", "narration_segment": "", "speaker": ""}
+        for i, beat in enumerate(beats[:-1])
+    ] + [beats[-1]]
+
+    table = build_assignment_table(
+        assign_beats(headings, scrambled, SCENES, script_lines=SCRIPT.split("\n"))
+    )
+    # 退回兜底后仍必须是 4 段、顺序正确、beat 不重不漏
+    assert [row["scene_id"] for row in table["by_scene"]] == [
+        "市立医院急诊走廊",
+        "市立医院12床病房",
+        "市立医院楼梯间",
+        "市立医院12床病房",
+    ]
+    assert sum(row["count"] for row in table["by_scene"]) == len(BEAT_SOURCE)
+    assert [row["beat_number"] for row in table["rows"]] == list(
+        range(1, len(BEAT_SOURCE) + 1)
+    )
+
+
 def test_empty_inputs_return_empty() -> None:
     assert assign_beats([], [{"beat_number": 1}]) == []
     assert assign_beats(parse_scene_headings(SCRIPT), []) == []
