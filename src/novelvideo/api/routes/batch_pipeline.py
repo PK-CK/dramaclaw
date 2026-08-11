@@ -145,26 +145,33 @@ async def start_batch_pipeline(
         resolution=body.resolution,
         cost_estimate=service.estimate_cost(beats, resolution=body.resolution),
     )
+    # 先备份旧状态：下面这行覆写在入队之前，入队若抛异常，上一轮的步骤
+    # 结果与闸门确认已经被抹平，而新任务并没有跑起来。
+    previous = service.load_state(resolved.output_dir, episode_num, project=ctx.project_id)
     service.save_state(resolved.output_dir, state)
 
-    queued = await get_task_backend().enqueue_project_task(
-        ctx,
-        product_surface="mainline",
-        task_type=TASK_TYPE,
-        queue_kind="default",
-        episode=episode_num,
-        payload={
-            "episode": episode_num,
-            "output_dir": resolved.output_dir,
-            "config": {
-                "auto_approve": auto_approve,
-                "start_from": body.start_from or "",
-                "resolution": body.resolution,
-                "video_concurrency": max(1, body.video_concurrency),
-                "options": body.options,
+    try:
+        queued = await get_task_backend().enqueue_project_task(
+            ctx,
+            product_surface="mainline",
+            task_type=TASK_TYPE,
+            queue_kind="default",
+            episode=episode_num,
+            payload={
+                "episode": episode_num,
+                "output_dir": resolved.output_dir,
+                "config": {
+                    "auto_approve": auto_approve,
+                    "start_from": body.start_from or "",
+                    "resolution": body.resolution,
+                    "video_concurrency": max(1, body.video_concurrency),
+                    "options": body.options,
+                },
             },
-        },
-    )
+        )
+    except Exception:
+        service.save_state(resolved.output_dir, previous)
+        raise
     logger.info("[%s] EP%d 批量流水线已入队 task=%s", project, episode_num, queued.task_state.task_id)
 
     return {
@@ -197,7 +204,9 @@ async def decide_batch_pipeline_gate(
     episode_num: int,
     gate_id: str,
     body: GateDecisionRequest,
-    user: dict = Depends(get_api_user),
+    # 放行闸门实质是授权后续子任务提交与开销，语义上属 tasks:submit，
+    # 与 start 端点保持同一强度。
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """确认或驳回一个闸门。驳回等同取消——后面的步骤都建立在它之上。"""
     if gate_id not in _GATE_VALUES:
@@ -222,12 +231,20 @@ async def decide_batch_pipeline_gate(
 async def cancel_batch_pipeline(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
-    """取消。已入队的子任务不会被回滚，但不会再有新的开销。"""
+    """取消。
+
+    协作式取消：已经发出去的出片请求不会被撤回，会跑完并按秒计费。
+    这是钱的知情权，必须写进用户可见的 message，不能只留在 docstring 里。
+    """
     resolved = await resolve_project_scope(project, user, required_role="editor")
     state = service.request_cancel(resolved.output_dir, episode_num)
-    return {"ok": True, "data": service.summarize(state), "message": "已请求取消"}
+    return {
+        "ok": True,
+        "data": service.summarize(state),
+        "message": "已请求取消。注意：此刻已经发出的出片请求会跑完并计费，之后不再有新的开销。",
+    }
 
 
 @router.get("/projects/{project}/episodes/{episode_num}/batch-pipeline/estimate")

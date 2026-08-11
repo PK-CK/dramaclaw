@@ -93,6 +93,13 @@ class Runtime:
         latest = service.load_state(self.output_dir, self.episode)
         if latest.cancelled:
             self.state.cancelled = True
+        # 只合并 approved，不合并 payload：目前 payload 只有流水线自己写，
+        # 前端调 approve 时传的是 null，没有第二个写入源。
+        # ⚠️ payload 还兼作前端的闸门显示判据（queries/batch-pipeline.ts 的
+        # pendingGate 用 payload 非空来判断闸门是否已到达）。日后前端若开始
+        # 回传人工修正，这里必须同步补上 payload 合并——否则不只是修正丢失，
+        # 闸门会因 payload 被覆盖成空而根本不渲染，用户看不到放行按钮，
+        # 流水线一路卡到 6 小时超时，且日志上看不出原因。
         for key, gate in latest.gates.items():
             if gate.approved:
                 self.state.gate(GateId(key)).approved = True
@@ -135,8 +142,9 @@ async def _await_task(
     from novelvideo.task_state import get_task_manager
 
     manager = get_task_manager()
-    waited = 0.0
-    while waited < timeout:
+    # 墙钟计时：只累加 sleep 会漏掉每轮的读盘与查询开销，实际超时明显长于标称
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         rt.raise_if_cancelled()
         state = manager.get_task_for_project(
             rt.ctx, task_type, rt.episode, beat_num=beat_num, scope=scope
@@ -145,7 +153,6 @@ async def _await_task(
         if matches and state.status in _TERMINAL:
             return state
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-        waited += _POLL_INTERVAL_SECONDS
     raise StepFailed(f"{label or task_type} 超时（{int(timeout / 60)} 分钟未结束）")
 
 
@@ -170,8 +177,10 @@ _GATE_STEP: dict[GateId, StepId] = {
 
 async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) -> None:
     """挂起等人确认。已放行（或已预授权）就直接过。"""
-    gate = rt.state.gate(gate_id)
-    gate.payload = payload
+    # 用完即弃：refresh_signals 会整份替换 state.gates，任何跨越它的
+    # gate 引用都会脱钩成孤儿（写进去的值再也落不了盘）。step 不受影响，
+    # 因为 refresh 不动 steps——但别指望这个巧合。
+    rt.state.gate(gate_id).payload = payload
     step = rt.state.step(_GATE_STEP[gate_id])
     rt.save()
 
@@ -184,8 +193,8 @@ async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) 
     rt.save()
     rt.log(f"⏸ 等待确认：{gate_id.value}")
 
-    waited = 0.0
-    while waited < _GATE_TIMEOUT_SECONDS:
+    deadline = asyncio.get_running_loop().time() + _GATE_TIMEOUT_SECONDS
+    while asyncio.get_running_loop().time() < deadline:
         rt.raise_if_cancelled()
         if rt.state.gate_is_open(gate_id):
             step.status = StepStatus.RUNNING
@@ -194,7 +203,6 @@ async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) 
             rt.log(f"闸门「{gate_id.value}」已确认，继续")
             return
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
-        waited += _POLL_INTERVAL_SECONDS
     raise StepFailed(f"闸门「{gate_id.value}」等待超时，流水线停在此处（未产生后续开销）")
 
 
@@ -582,6 +590,9 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
             f"⚠️ {len(failed)} 个 beat 未出片：{rt.state.failed_beats}。"
             "这些位置在成片里是缺口，会断剧情连续性，需单独重试后再合成。"
         )
+    if total and done == 0:
+        # 一个都没出来还报「完成」，用户会以为可以去合成了
+        raise StepFailed(f"{total} 个 beat 全部出片失败，第一条错误：{failed[0]['error']}")
     return {"total": total, "succeeded": done, "failed": failed}
 
 
