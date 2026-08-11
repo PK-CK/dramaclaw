@@ -84,6 +84,20 @@ class Runtime:
         return await make_sqlite_store_for_context(self.ctx)
 
     def save(self) -> None:
+        """写盘。
+
+        取消与闸门确认是别的请求写进这个文件的；直接整份覆盖会把刚到的
+        决定抹掉（本进程内存里的副本可能是 2 秒前的）。这两类信号只会
+        false→true，写之前从盘上合并回来即可。
+        """
+        latest = service.load_state(self.output_dir, self.episode)
+        if latest.cancelled:
+            self.state.cancelled = True
+        for key, gate in latest.gates.items():
+            if gate.approved:
+                self.state.gate(GateId(key)).approved = True
+        if latest.auto_approve:
+            self.state.auto_approve = latest.auto_approve
         service.save_state(self.output_dir, self.state)
 
     def refresh_signals(self) -> None:
@@ -106,12 +120,18 @@ async def _await_task(
     rt: Runtime,
     task_type: str,
     *,
+    task_id: str = "",
     beat_num: int | None = None,
     scope: str | None = None,
     label: str = "",
     timeout: float = _TASK_TIMEOUT_SECONDS,
 ) -> Any:
-    """轮询子任务直到终态。返回 TaskState。"""
+    """轮询子任务直到终态。返回 TaskState。
+
+    必须带 task_id：任务状态按 (task_type, episode, beat, scope) 做 key，
+    上一轮同 key 的记录可能还留在库里且已是 completed；不比对 task_id
+    就会一进来就"看见完成"，直接跳过这一步。
+    """
     from novelvideo.task_state import get_task_manager
 
     manager = get_task_manager()
@@ -121,7 +141,8 @@ async def _await_task(
         state = manager.get_task_for_project(
             rt.ctx, task_type, rt.episode, beat_num=beat_num, scope=scope
         )
-        if state is not None and state.status in _TERMINAL:
+        matches = state is not None and (not task_id or state.task_id == task_id)
+        if matches and state.status in _TERMINAL:
             return state
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
         waited += _POLL_INTERVAL_SECONDS
@@ -135,21 +156,41 @@ def _require_ok(payload: Any, what: str) -> dict[str, Any]:
     return data
 
 
+def _task_id_of(data: dict[str, Any]) -> str:
+    return str(data.get("task_id") or "")
+
+
+#: 闸门归属的步骤。挂起等人时把该步标成 waiting_gate，前端才能显示暂停态。
+_GATE_STEP: dict[GateId, StepId] = {
+    GateId.SCENE_ASSIGNMENT: StepId.MATCH_SCENES,
+    GateId.SKETCH_SAMPLE: StepId.SKETCHES,
+    GateId.RENDER_SAMPLE: StepId.RENDER,
+}
+
+
 async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) -> None:
     """挂起等人确认。已放行（或已预授权）就直接过。"""
     gate = rt.state.gate(gate_id)
     gate.payload = payload
+    step = rt.state.step(_GATE_STEP[gate_id])
     rt.save()
 
     if rt.state.gate_is_open(gate_id):
         rt.log(f"闸门「{gate_id.value}」已放行")
         return
 
+    step.status = StepStatus.WAITING_GATE
+    step.message = f"等待确认：{gate_id.value}"
+    rt.save()
     rt.log(f"⏸ 等待确认：{gate_id.value}")
+
     waited = 0.0
     while waited < _GATE_TIMEOUT_SECONDS:
         rt.raise_if_cancelled()
         if rt.state.gate_is_open(gate_id):
+            step.status = StepStatus.RUNNING
+            step.message = ""
+            rt.save()
             rt.log(f"闸门「{gate_id.value}」已确认，继续")
             return
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
@@ -238,14 +279,22 @@ async def run_plan_assets(rt: Runtime) -> dict[str, Any]:
 
     if not preflight.get("scene_menu"):
         rt.log("规划场景菜单...")
-        _require_ok(await plan_episode_scenes(rt.project, rt.episode, rt.user), "场景规划")
-        await _await_task(rt, "episode_scene_planner", label="场景规划")
+        data = _require_ok(
+            await plan_episode_scenes(rt.project, rt.episode, rt.user), "场景规划"
+        )
+        await _await_task(
+            rt, "episode_scene_planner", task_id=_task_id_of(data), label="场景规划"
+        )
         planned.append("scene")
 
     if not preflight.get("prop_menu"):
         rt.log("规划道具菜单...")
-        _require_ok(await plan_episode_props(rt.project, rt.episode, rt.user), "道具规划")
-        await _await_task(rt, "episode_prop_planner", label="道具规划")
+        data = _require_ok(
+            await plan_episode_props(rt.project, rt.episode, rt.user), "道具规划"
+        )
+        await _await_task(
+            rt, "episode_prop_planner", task_id=_task_id_of(data), label="道具规划"
+        )
         planned.append("prop")
 
     if not planned:
@@ -318,19 +367,27 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
     data = _require_ok(
         await generate_sketches(rt.project, rt.episode, body, rt.user), "草图生成"
     )
-    scopes = list((data.get("data") or {}).get("scopes") or [])
-    if not scopes and data.get("task_key"):
-        scopes = [str(data.get("scope") or "grid_0")]
-    rt.log(f"草图任务已入队：{len(scopes)} 个网格")
+    tasks = [
+        (str(item.get("scope") or ""), str(item.get("task_id") or ""))
+        for item in ((data.get("data") or {}).get("tasks") or [])
+    ]
+    if not tasks and data.get("task_id"):
+        tasks = [(str(data.get("scope") or "grid_0"), _task_id_of(data))]
+    scopes = [scope for scope, _ in tasks]
+    rt.log(f"草图任务已入队：{len(tasks)} 个网格")
 
     failed: list[str] = []
-    for index, scope in enumerate(scopes, start=1):
+    for index, (scope, task_id) in enumerate(tasks, start=1):
         state = await _await_task(
-            rt, "sketch_grid_generation", scope=scope, label=f"草图 {scope}"
+            rt,
+            "sketch_grid_generation",
+            task_id=task_id,
+            scope=scope,
+            label=f"草图 {scope}",
         )
         if state.status != "completed":
             failed.append(f"{scope}: {state.error or state.status}")
-        rt.log(f"草图 {index}/{len(scopes)} 完成", progress=index / max(len(scopes), 1))
+        rt.log(f"草图 {index}/{len(tasks)} 完成", progress=index / max(len(tasks), 1))
     if failed:
         raise StepFailed("草图生成失败：" + "；".join(failed))
 
@@ -364,7 +421,13 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
     )
     scope = str(data.get("scope") or (data.get("data") or {}).get("scope") or "")
     rt.log(f"渲染任务已入队（{len(beat_numbers)} 个 beat）")
-    state = await _await_task(rt, "selected_regen", scope=scope or None, label="批量渲染")
+    state = await _await_task(
+        rt,
+        "selected_regen",
+        task_id=_task_id_of(data),
+        scope=scope or None,
+        label="批量渲染",
+    )
     if state.status != "completed":
         raise StepFailed(f"批量渲染失败：{state.error or state.status}")
 
@@ -465,7 +528,15 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
 
     _store, _script, beats = await _load_script(rt)
     backend = str(rt.options.get("video_backend") or "grok_720")
-    resolution = str(rt.state.resolution or "720p")
+    # resolution/duration/ratio 只在显式给了值时才塞进请求体：路由用
+    # `"resolution" in model_fields_set` 判断用户有没有动过它，白填一个
+    # 默认值会改变计费口径与 seedance2 分支的行为。grok_720 固定 720p，
+    # 本来也不吃这三个字段。
+    extra: dict[str, Any] = {}
+    for key in ("resolution", "duration", "ratio"):
+        value = rt.options.get(key)
+        if value not in (None, ""):
+            extra[key] = value
     semaphore = asyncio.Semaphore(max(1, int(rt.state.video_concurrency or 2)))
 
     done = 0
@@ -477,21 +548,20 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
         beat_num = int(beat.get("beat_number") or 0)
         async with semaphore:
             rt.raise_if_cancelled()
-            body = SingleVideoRequest(
-                resolution=resolution,
-                video_backend=backend,
-                duration=rt.options.get("duration"),
-                ratio=rt.options.get("ratio"),
-            )
+            body = SingleVideoRequest(video_backend=backend, **extra)
             try:
-                _require_ok(
+                queued = _require_ok(
                     await generate_single_video(
                         rt.project, rt.episode, beat_num, body, rt.user
                     ),
                     f"Beat {beat_num} 出片",
                 )
                 state = await _await_task(
-                    rt, "single_video", beat_num=beat_num, label=f"Beat {beat_num} 出片"
+                    rt,
+                    "single_video",
+                    task_id=_task_id_of(queued),
+                    beat_num=beat_num,
+                    label=f"Beat {beat_num} 出片",
                 )
                 if state.status != "completed":
                     raise StepFailed(state.error or state.status)
