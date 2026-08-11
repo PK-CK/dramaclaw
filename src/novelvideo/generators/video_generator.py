@@ -342,26 +342,6 @@ class SeedanceVideoGenerator(VideoGeneratorBase):
         if not self.api_key:
             raise ValueError("VOLCENGINE_VISUAL_API_KEY or ARK_API_KEY must be set")
 
-    async def _download_grok_video(self, url: str, output_path: str, log) -> bool:
-        """带 Bearer 鉴权下载 xAI 成片（基类下载不带 header，会 401）。"""
-        import httpx
-
-        try:
-            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
-                resp = await client.get(
-                    url, headers={"Authorization": f"Bearer {self.api_key}"}
-                )
-                if resp.status_code != 200 or not resp.content:
-                    log(f"下载失败: HTTP {resp.status_code}")
-                    return False
-                os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                with open(output_path, "wb") as f:
-                    f.write(resp.content)
-                return True
-        except Exception as exc:
-            log(f"下载异常: {exc}")
-            return False
-
     def _local_to_data_url(self, image_path: str) -> str:
         """将本地图片转换为 data URL（base64）。"""
         import base64
@@ -1075,6 +1055,30 @@ class GrokVideoGenerator(VideoGeneratorBase):
 
         if not self.api_key:
             raise ValueError("XAI_API_KEY must be set for Grok video generation")
+
+    async def _download_grok_video(self, url: str, output_path: str, log) -> bool:
+        """带 Bearer 鉴权下载 xAI 成片。
+
+        基类 _download_video 既不拼 base 也不带 Authorization，直接用会 401。
+        必须留在 GrokVideoGenerator 里——调用点在本类的 generate 流程内。
+        """
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=180, follow_redirects=True) as client:
+                resp = await client.get(
+                    url, headers={"Authorization": f"Bearer {self.api_key}"}
+                )
+                if resp.status_code != 200 or not resp.content:
+                    log(f"下载失败: HTTP {resp.status_code}")
+                    return False
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                with open(output_path, "wb") as f:
+                    f.write(resp.content)
+                return True
+        except Exception as exc:
+            log(f"下载异常: {exc}")
+            return False
 
     def _local_to_data_url(self, image_path: str) -> str:
         import base64
