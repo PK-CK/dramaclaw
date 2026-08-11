@@ -126,11 +126,11 @@ export function useBatchPipelineStatus(
         }),
       ),
     enabled: enabled && !!project && episode > 0,
-    // 轮询节奏由数据自己决定：在跑（含卡在闸门）才 2s 一次，否则停。
-    // 写成函数而不是外部布尔量，避免同一 key 被两个 useQuery 用不同
-    // 间隔订阅时互相覆盖。
+    // 弹窗开着就一直轮询（关着由 enabled 兜底）：start 刚返回时 runner
+    // 还没把第一步标 running，若此刻按「非 active」停掉轮询就再也醒不来。
+    // 在跑（含卡在闸门）2s 一次，静置 5s 一次。
     refetchInterval: (query) =>
-      isPipelineActive(query.state.data?.data) ? 2000 : false,
+      isPipelineActive(query.state.data?.data) ? 2000 : 5000,
   });
 }
 
