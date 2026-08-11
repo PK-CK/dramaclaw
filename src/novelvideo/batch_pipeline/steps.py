@@ -411,6 +411,39 @@ async def run_match_scenes(rt: Runtime) -> dict[str, Any]:
 # ── 第 3 步：批量草图（闸门 2）───────────────────────────────────────────
 
 
+#: 出图类子任务一次带几个 beat。默认 1——每张出完立刻落盘。
+#:
+#: 上游 render.py 的 selected_regen 是「先把所有网格全生成完，再统一切回
+#: beat 帧」（`results = await regenerate_selected_beats(...)` 之后才进
+#: `for result in results: save_grid_and_split(...)`）。整集丢进去意味着：
+#:   ① 54 张 × 60–90 秒 ≈ 70 分钟，必然撞上 ST_PROJECT_TASK_TIMEOUT_S
+#:      的 1800 秒硬上限被杀；
+#:   ② 死在半路时一张都没切回 beat，已经出的图连同 token 全部作废；
+#:   ③ 中途没有任何 per-beat 产物，看不出进度，重试也无从跳过。
+#: 上游代码不能动，那就别给它整集——一次只给一个 beat，它出完那一张就
+#: 立刻切图落盘。网络抖动最多废掉当前这一张，重跑时已有图的直接跳过。
+_DEFAULT_IMAGE_CHUNK = 1
+
+
+def _image_chunk_size(rt: Runtime) -> int:
+    override = rt.options.get("image_chunk_size")
+    if override:
+        try:
+            return max(1, int(override))
+        except (TypeError, ValueError):
+            pass
+    return _DEFAULT_IMAGE_CHUNK
+
+
+def _chunked(items: list[int], size: int) -> list[list[int]]:
+    return [items[i : i + size] for i in range(0, len(items), size)]
+
+
+#: 连续失败到这个数就停：单张失败多半是网络抖动，连着失败就是配置或额度问题，
+#: 再往下跑只是把整集的钱烧完。
+_MAX_CONSECUTIVE_FAILURES = 3
+
+
 def _missing_beats(rt: Runtime, beats: list[dict[str, Any]], kind: str) -> list[int]:
     """挑出还没有产物的 beat。
 
@@ -451,31 +484,58 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
     # 只缺一部分时走单 beat 再生，别为了几个缺口把整集重出一遍
     if len(missing) < len(beats):
         rt.log(f"{len(beats) - len(missing)} 个 beat 已有草图，只补 {len(missing)} 个：{missing}")
-        regen = SketchRegenerateRequest(
-            beat_indices=missing,
-            style=rt.options.get("style"),
-            model=str(rt.options.get("sketch_model") or "nanobanana"),
-            mode_key=str(rt.options.get("sketch_mode_key") or "1x1_2-3"),
-            image_generation_selection=rt.options.get("image_generation_selection"),
+        filled: list[int] = []
+        consecutive = 0
+        for chunk in _chunked(missing, _image_chunk_size(rt)):
+            rt.raise_if_cancelled()
+            label = f"Beat {chunk[0]}" if len(chunk) == 1 else f"Beat {chunk[0]}–{chunk[-1]}"
+            rt.step_progress(
+                StepId.SKETCHES,
+                f"补草图 {len(filled)}/{len(missing)}（{label}）",
+                len(filled) / max(len(missing), 1),
+            )
+            regen = SketchRegenerateRequest(
+                beat_indices=chunk,
+                style=rt.options.get("style"),
+                model=str(rt.options.get("sketch_model") or "nanobanana"),
+                mode_key=str(rt.options.get("sketch_mode_key") or "1x1_2-3"),
+                image_generation_selection=rt.options.get("image_generation_selection"),
+            )
+            try:
+                data = _require_ok(
+                    await regenerate_sketches(rt.project, rt.episode, regen, rt.user),
+                    f"补草图 {label}",
+                )
+                state = await _await_task(
+                    rt,
+                    "sketch_regen",
+                    task_id=_task_id_of(data),
+                    scope=str(data.get("scope") or "") or None,
+                    label=f"补草图 {label}",
+                )
+                if state.status != "completed":
+                    raise StepFailed(state.error or state.status)
+            except PipelineCancelled:
+                raise
+            except Exception as exc:  # noqa: BLE001 — 单块失败不该废掉整步
+                consecutive += 1
+                rt.log(f"❌ {label} 草图失败（第 {consecutive} 次连续失败）：{exc}")
+                if consecutive >= _MAX_CONSECUTIVE_FAILURES:
+                    raise StepFailed(
+                        f"连续 {consecutive} 次草图失败，已停止。最后一条错误：{exc}"
+                    ) from exc
+                continue
+            consecutive = 0
+            filled.extend(chunk)
+        rt.step_progress(
+            StepId.SKETCHES, f"补草图 {len(filled)}/{len(missing)} 完成", 1.0
         )
-        data = _require_ok(
-            await regenerate_sketches(rt.project, rt.episode, regen, rt.user), "草图补齐"
-        )
-        state = await _await_task(
-            rt,
-            "sketch_regen",
-            task_id=_task_id_of(data),
-            scope=str(data.get("scope") or "") or None,
-            label="草图补齐",
-        )
-        if state.status != "completed":
-            raise StepFailed(f"草图补齐失败：{state.error or state.status}")
         await _wait_for_gate(
             rt,
             GateId.SKETCH_SAMPLE,
-            {"beats": missing, "hint": "抽查新补的草图，确认后继续渲染"},
+            {"beats": filled, "hint": "抽查新补的草图，确认后继续渲染"},
         )
-        return {"scopes": [], "filled": missing, "existing": len(beats) - len(missing)}
+        return {"scopes": [], "filled": filled, "existing": len(beats) - len(missing)}
 
     rt.log(f"{len(missing)} 个 beat 都没有草图，整集生成")
     body = SketchGenerateRequest(
@@ -548,43 +608,78 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
         )
         return {"beats": 0, "skipped": True, "existing": len(beats)}
 
-    if len(missing) < len(beats):
-        rt.log(f"{len(beats) - len(missing)} 个 beat 已有渲染图，只补 {len(missing)} 个：{missing}")
-    else:
-        rt.log(f"{len(missing)} 个 beat 都没有渲染图，整集生成")
+    existing = len(beats) - len(missing)
+    if existing:
+        rt.log(f"{existing} 个 beat 已有渲染图，只补 {len(missing)} 个：{missing}")
 
-    body = BeatsRegenerateRequest(
-        beat_indices=missing,
-        style=rt.options.get("style"),
-        model=str(rt.options.get("render_model") or "nanobanana"),
-        mode_key=str(rt.options.get("render_mode_key") or "1x1_2-3"),
-        image_generation_selection=rt.options.get("image_generation_selection"),
-    )
-    data = _require_ok(
-        await regenerate_beats(rt.project, rt.episode, body, rt.user), "批量渲染"
-    )
-    scope = str(data.get("scope") or (data.get("data") or {}).get("scope") or "")
-    rt.log(f"渲染任务已入队（{len(missing)} 个 beat）")
-    state = await _await_task(
-        rt,
-        "selected_regen",
-        task_id=_task_id_of(data),
-        scope=scope or None,
-        label="批量渲染",
-        progress_step=StepId.RENDER,
-    )
-    if state.status != "completed":
-        raise StepFailed(f"批量渲染失败：{state.error or state.status}")
+    chunks = _chunked(missing, _image_chunk_size(rt))
+    done_beats: list[int] = []
+    failed: list[dict[str, Any]] = []
+    consecutive = 0
+
+    for index, chunk in enumerate(chunks, start=1):
+        rt.raise_if_cancelled()
+        label = f"Beat {chunk[0]}" if len(chunk) == 1 else f"Beat {chunk[0]}–{chunk[-1]}"
+        rt.step_progress(
+            StepId.RENDER,
+            f"渲染 {len(done_beats)}/{len(missing)}（{label}）",
+            len(done_beats) / max(len(missing), 1),
+        )
+        body = BeatsRegenerateRequest(
+            beat_indices=chunk,
+            style=rt.options.get("style"),
+            model=str(rt.options.get("render_model") or "nanobanana"),
+            mode_key=str(rt.options.get("render_mode_key") or "1x1_2-3"),
+            image_generation_selection=rt.options.get("image_generation_selection"),
+        )
+        try:
+            data = _require_ok(
+                await regenerate_beats(rt.project, rt.episode, body, rt.user),
+                f"渲染 {label}",
+            )
+            state = await _await_task(
+                rt,
+                "selected_regen",
+                task_id=_task_id_of(data),
+                scope=str(data.get("scope") or "") or None,
+                label=f"渲染 {label}",
+            )
+            if state.status != "completed":
+                raise StepFailed(state.error or state.status)
+        except PipelineCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 单块失败不该废掉整集
+            consecutive += 1
+            failed.append({"beats": chunk, "error": str(exc)})
+            rt.log(f"❌ {label} 渲染失败（第 {consecutive} 次连续失败）：{exc}")
+            if consecutive >= _MAX_CONSECUTIVE_FAILURES:
+                raise StepFailed(
+                    f"连续 {consecutive} 次渲染失败，已停止以免烧完整集额度。"
+                    f"最后一条错误：{exc}"
+                ) from exc
+            continue
+        consecutive = 0
+        done_beats.extend(chunk)
+        rt.step_progress(
+            StepId.RENDER,
+            f"渲染 {len(done_beats)}/{len(missing)}（{label} 完成）",
+            len(done_beats) / max(len(missing), 1),
+        )
+        _ = index
+
+    if failed:
+        rt.log(f"⚠️ {len(failed)} 块渲染失败，未出图的 beat 需重跑（重跑会自动跳过已有的）")
 
     await _wait_for_gate(
         rt,
         GateId.RENDER_SAMPLE,
         {
-            "beats": missing,
+            "beats": done_beats,
+            "failed": failed,
             "hint": "抽查画风、角色脸、背景是否一致，确认后继续生成视频提示词",
         },
     )
-    return {"beats": len(missing), "existing": len(beats) - len(missing)}
+    return {"beats": len(done_beats), "existing": existing, "failed": failed}
 
 
 # ── 第 5 步：逐 beat 生成视频提示词（闸门 4）─────────────────────────────
