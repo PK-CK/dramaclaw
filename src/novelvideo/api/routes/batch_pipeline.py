@@ -19,6 +19,7 @@ from novelvideo.batch_pipeline.models import GateId, PipelineState, StepId
 from novelvideo.ports import get_task_backend
 from novelvideo.task_backend.runners.batch_pipeline import TASK_TYPE
 from novelvideo.task_identity import project_task_state_key
+from novelvideo.task_state import get_task_manager
 
 logger = logging.getLogger("novelvideo.api.batch_pipeline")
 
@@ -26,6 +27,8 @@ router = APIRouter()
 
 _GATE_VALUES = {gate.value for gate in GateId}
 _STEP_VALUES = {step.value for step in StepId}
+#: 任务已结束的状态。与 batch_pipeline.steps._TERMINAL 同源。
+_TERMINAL_TASK_STATUS = {"completed", "failed", "cancelled"}
 
 
 class BatchPipelineStartRequest(BaseModel):
@@ -66,6 +69,15 @@ async def start_batch_pipeline(
 
     if body.start_from and body.start_from not in _STEP_VALUES:
         raise HTTPException(status_code=400, detail=f"未知的起始步骤: {body.start_from}")
+
+    # 同一集只允许有一条在跑：两条会抢写同一份 state.json，闸门与取消
+    # 标记互相覆盖，而且各自都在等对方入队的子任务。
+    running = get_task_manager().get_task_for_project(ctx, TASK_TYPE, episode_num)
+    if running is not None and running.status not in _TERMINAL_TASK_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"第 {episode_num} 集已有批量流水线在跑（{running.status}），请先取消或等它结束",
+        )
 
     store = await make_sqlite_store_for_context(ctx)
     script = await store.get_script_as_dict(episode_num)
