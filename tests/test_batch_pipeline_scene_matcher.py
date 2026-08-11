@@ -205,6 +205,47 @@ def test_missing_beats_skips_existing_artifacts(tmp_path) -> None:
     assert _missing_beats(rt, beats, "frame") == []
 
 
+def test_existing_video_prompt_and_video_are_skipped(tmp_path) -> None:
+    """提示词与成片都要按已有产物跳过——两者重做都是白花钱。"""
+    from novelvideo.batch_pipeline.models import PipelineState
+    from novelvideo.batch_pipeline.steps import (
+        Runtime,
+        _existing_video_prompt,
+        _has_video,
+    )
+
+    # 提示词：首帧模式看 video_prompt，首尾帧模式看 keyframe_prompt
+    assert _existing_video_prompt({"video_prompt": "镜头推近"}) == "镜头推近"
+    assert _existing_video_prompt({"video_prompt": "   "}) == ""
+    assert _existing_video_prompt({}) == ""
+    assert (
+        _existing_video_prompt({"video_mode": "keyframe", "keyframe_prompt": "过渡"})
+        == "过渡"
+    )
+    # 首尾帧模式下 video_prompt 有值也不算数——出片用的是 keyframe_prompt
+    assert (
+        _existing_video_prompt({"video_mode": "keyframe", "video_prompt": "旧文案"}) == ""
+    )
+
+    videos = tmp_path / "videos" / "beats" / "ep001"
+    videos.mkdir(parents=True)
+    (videos / "beat_01.mp4").write_bytes(b"x")
+    (videos / "beat_02.mp4").write_bytes(b"")  # 空文件视同没出
+
+    rt = Runtime(
+        ctx=None,  # type: ignore[arg-type]
+        episode=1,
+        output_dir=str(tmp_path),
+        state=PipelineState(project="p", episode=1),
+        log=lambda *a, **k: None,
+    )
+    assert _has_video(rt, {"beat_number": 1}) is True           # 盘上有 mp4
+    assert _has_video(rt, {"beat_number": 2}) is False          # 空文件不算
+    assert _has_video(rt, {"beat_number": 3}) is False          # 什么都没有
+    # 库里有 video_url 就算，即使盘上没文件（换过存储、或只留了远端地址）
+    assert _has_video(rt, {"beat_number": 3, "video_url": "https://x/a.mp4"}) is True
+
+
 def test_empty_inputs_return_empty() -> None:
     assert assign_beats([], [{"beat_number": 1}]) == []
     assert assign_beats(parse_scene_headings(SCRIPT), []) == []

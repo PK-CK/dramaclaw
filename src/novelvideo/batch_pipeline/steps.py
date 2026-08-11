@@ -758,6 +758,30 @@ async def run_video_prompts(rt: Runtime) -> dict[str, Any]:
     return dict(prompts["stats"])
 
 
+def _has_video(rt: Runtime, beat: dict[str, Any]) -> bool:
+    """这个 beat 是否已经出过片。
+
+    两处都认：beat 上的 video_url，以及盘上的 mp4。下载成功会写 video_url，
+    但历史数据可能只有文件（早期手动跑的、或写库前就中断的），只看一处会漏。
+    """
+    from novelvideo.utils.path_resolver import PathResolver
+
+    if str(beat.get("video_url") or "").strip():
+        return True
+    target = PathResolver(rt.output_dir, rt.episode).video(int(beat.get("beat_number") or 0))
+    return target.exists() and target.stat().st_size > 0
+
+
+def _existing_video_prompt(beat: dict[str, Any]) -> str:
+    """取 beat 上已有的视频提示词。首尾帧模式用 keyframe_prompt。"""
+    field = (
+        "keyframe_prompt"
+        if str(beat.get("video_mode") or "first_frame") == "keyframe"
+        else "video_prompt"
+    )
+    return str(beat.get(field) or "").strip()
+
+
 async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
     """逐 beat 生成视频提示词并叠加导演级约束。"""
     from novelvideo.api.routes.scripts import _generate_and_save_beat_video_prompt
@@ -775,12 +799,45 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
         prev_scene = scene_id
         index_in_scene[int(beat.get("beat_number") or 0)] = counter
 
+    beat_by_number = {int(b.get("beat_number") or 0): b for b in beats}
     generated = 0
     enhanced = 0
     skipped: list[int] = []
+    reused: list[int] = []
     samples: list[dict[str, Any]] = []
 
-    for position, beat in enumerate(beats):
+    # 已经有提示词的不重生成：重生成要再调一次视觉模型（读草图出运镜文案），
+    # 花钱，而且会把人工在虾镜里改过的文案覆盖掉。
+    pending = [
+        beat
+        for beat in beats
+        if not _existing_video_prompt(beat)
+    ]
+    reused = [
+        int(beat.get("beat_number") or 0) for beat in beats if _existing_video_prompt(beat)
+    ]
+    if reused:
+        rt.log(f"{len(reused)} 个 beat 已有视频提示词，跳过；只生成 {len(pending)} 个")
+    if not pending:
+        rt.log("全部 beat 都已有视频提示词，整步跳过")
+        for beat in beats[:3]:
+            samples.append(
+                {
+                    "beat_number": int(beat.get("beat_number") or 0),
+                    "prompt": _existing_video_prompt(beat),
+                }
+            )
+        return {
+            "samples": samples,
+            "stats": {
+                "prompts_generated": 0,
+                "prompts_enhanced": 0,
+                "prompts_reused": reused,
+                "prompts_skipped": [],
+            },
+        }
+
+    for position, beat in enumerate(pending):
         rt.raise_if_cancelled()
         beat_num = int(beat.get("beat_number") or 0)
         try:
@@ -807,7 +864,7 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
             scene_id=str((beat.get("scene_ref") or {}).get("scene_id") or ""),
             time_of_day=str(beat.get("time_of_day") or ""),
             index_in_scene=index_in_scene.get(beat_num, 0),
-            prev_beat=beats[position - 1] if position else None,
+            prev_beat=beat_by_number.get(beat_num - 1),
         )
         final = enhance_video_prompt(base, shot)
         if final and not is_enhanced(str(data.get("prompt") or "")):
@@ -820,16 +877,20 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
 
         rt.step_progress(
             StepId.VIDEO_PROMPTS,
-            f"视频提示词 {position + 1}/{len(beats)}",
-            (position + 1) / max(len(beats), 1),
+            f"视频提示词 {position + 1}/{len(pending)}（Beat {beat_num}）",
+            (position + 1) / max(len(pending), 1),
         )
 
     if skipped:
         rt.log(f"⚠️ {len(skipped)} 个 beat 没有提示词：{skipped}，出片时会跳过")
     return {
         "samples": samples,
-        "stats": {"prompts_generated": generated, "prompts_enhanced": enhanced,
-                  "prompts_skipped": skipped},
+        "stats": {
+            "prompts_generated": generated,
+            "prompts_enhanced": enhanced,
+            "prompts_reused": reused,
+            "prompts_skipped": skipped,
+        },
     }
 
 
@@ -842,13 +903,25 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
 
     _store, _script, beats = await _load_script(rt)
 
+    # 已经有成片的不再出：出片按秒计费，重出一遍就是白烧一次钱。
+    # 判定看两处——beat 上的 video_url，以及盘上的 mp4；
+    # 任一存在即视为已出（下载成功会写 video_url，但历史数据可能只有文件）。
+    pending = [b for b in beats if not _has_video(rt, b)]
+    already = [int(b.get("beat_number") or 0) for b in beats if _has_video(rt, b)]
+    if already:
+        rt.log(f"{len(already)} 个 beat 已有成片，跳过；只出 {len(pending)} 个")
+    if not pending:
+        rt.log(f"全部 {len(beats)} 个 beat 都已有成片，整步跳过（不进出片闸门，不计费）")
+        return {"total": 0, "succeeded": 0, "failed": [], "existing": len(beats)}
+
     # 闸门 5 是钱闸：过了这道门才开始按秒计费。不预授权、也不来点头，
     # 超时走 GateTimedOutSkip——出片步标 skipped，前面的成果照常保留。
     await _wait_for_gate(
         rt,
         GateId.VIDEO_GENERATION,
         {
-            "beats": len(beats),
+            "beats": len(pending),
+            "existing": len(already),
             "cost_estimate": dict(rt.state.cost_estimate),
             "hint": (
                 "确认后开始批量出片（按秒计费）。不确认则到时自动跳过出片，"
@@ -872,7 +945,7 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
 
     done = 0
     failed: list[dict[str, Any]] = []
-    total = len(beats)
+    total = len(pending)
 
     async def _one(beat: dict[str, Any]) -> None:
         nonlocal done
@@ -905,7 +978,7 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
         done += 1
         rt.step_progress(StepId.VIDEOS, f"出片 {done}/{total}", done / max(total, 1))
 
-    await asyncio.gather(*(_one(beat) for beat in beats))
+    await asyncio.gather(*(_one(beat) for beat in pending))
 
     rt.state.failed_beats = [int(item["beat_number"]) for item in failed]
     if failed:
@@ -916,7 +989,12 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
     if total and done == 0:
         # 一个都没出来还报「完成」，用户会以为可以去合成了
         raise StepFailed(f"{total} 个 beat 全部出片失败，第一条错误：{failed[0]['error']}")
-    return {"total": total, "succeeded": done, "failed": failed}
+    return {
+        "total": total,
+        "succeeded": done,
+        "failed": failed,
+        "existing": len(already),
+    }
 
 
 # ── 编排 ────────────────────────────────────────────────────────────────
