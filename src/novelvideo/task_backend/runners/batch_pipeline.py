@@ -42,8 +42,11 @@ async def _run_batch_pipeline_async(
             logs=[message],
         )
 
+    # 不清 cancelled：任务排队期间用户可能已经点了取消（default 车道拥塞时
+    # 排队可达数分钟），清零会把那次取消抹掉、照常烧到按秒计费的出片。
+    # start 路由在入队前已写入全新 PipelineState（cancelled 默认 False），
+    # 正常起跑本就不需要在这里再清一次。
     state = service.load_state(output_dir, episode, project=ctx.project_id)
-    state.cancelled = False
     state.auto_approve = [
         gate for gate in (config.get("auto_approve") or []) if gate in {g.value for g in GateId}
     ]

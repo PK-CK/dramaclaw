@@ -47,6 +47,38 @@ class GateDecisionRequest(BaseModel):
     payload: Optional[dict[str, Any]] = None
 
 
+def _max_concurrent_pipelines() -> int:
+    """同时最多几条流水线。
+
+    runner 与它的草图/渲染子任务共用 default 车道，所以只能占一半槽，
+    另一半留给子任务；至少允许 1 条，否则功能等于关掉。
+    """
+    from novelvideo.task_backend.limits import global_lane_concurrency
+
+    return max(1, global_lane_concurrency("default") // 2)
+
+
+def _active_pipeline_count(manager, ctx) -> int:
+    """统计这个用户名下还在跑的流水线条数（跨项目、跨集）。
+
+    车道并发是**全实例**的，严格说应该全局统计；这里只统计到用户一级，
+    因为跨用户的活跃任务没有现成的查询接口，而真正的准入控制属于
+    task backend 的职责，不该在这条业务路由里另造一套。CE 单用户部署下
+    两者等价；多用户实例仍可能被多人叠加占满车道。
+    """
+    seen: set[str] = set()
+    active = 0
+    for task in manager.list_tasks_for_user(ctx.owner_username):
+        if task.task_type != TASK_TYPE or task.status in _TERMINAL_TASK_STATUS:
+            continue
+        key = f"{task.project_id}:{task.episode}"
+        if key in seen:
+            continue
+        seen.add(key)
+        active += 1
+    return active
+
+
 def _validated_auto_approve(values: list[str]) -> list[str]:
     from novelvideo.batch_pipeline.models import MANDATORY_GATES
 
@@ -70,13 +102,29 @@ async def start_batch_pipeline(
     if body.start_from and body.start_from not in _STEP_VALUES:
         raise HTTPException(status_code=400, detail=f"未知的起始步骤: {body.start_from}")
 
+    manager = get_task_manager()
+
     # 同一集只允许有一条在跑：两条会抢写同一份 state.json，闸门与取消
     # 标记互相覆盖，而且各自都在等对方入队的子任务。
-    running = get_task_manager().get_task_for_project(ctx, TASK_TYPE, episode_num)
+    running = manager.get_task_for_project(ctx, TASK_TYPE, episode_num)
     if running is not None and running.status not in _TERMINAL_TASK_STATUS:
         raise HTTPException(
             status_code=409,
             detail=f"第 {episode_num} 集已有批量流水线在跑（{running.status}），请先取消或等它结束",
+        )
+
+    # 跨集也要限：runner 自己占 default 车道一个槽，它的草图/渲染子任务
+    # 也回 default 抢槽。同时开的集数一旦占满这条车道，所有 runner 都在等
+    # 各自永远排不上的子任务——整体饿死到超时为止。留一半槽给子任务。
+    active = _active_pipeline_count(manager, ctx)
+    if active >= _max_concurrent_pipelines():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"已有 {active} 集批量流水线在跑，达到并发上限 "
+                f"{_max_concurrent_pipelines()}（再多会把任务车道占满，子任务排不上）。"
+                "请等其中一集结束或先取消。"
+            ),
         )
 
     store = await make_sqlite_store_for_context(ctx)

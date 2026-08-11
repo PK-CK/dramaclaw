@@ -632,6 +632,16 @@ async def run_pipeline(rt: Runtime, *, start_from: StepId | None = None) -> dict
             step.message = "已取消"
             rt.save()
             raise
+        except asyncio.CancelledError:
+            # 通用任务面板的取消与 deadline 超时走的是 main_task.cancel()，
+            # 抛的是 CancelledError —— 它继承 BaseException，`except Exception`
+            # 拦不住。不在这里落盘，state.json 会永远停在 running，
+            # 前端一直显示「正在跑」而实际早已没有进程。
+            step.status = StepStatus.PENDING
+            step.message = "已被取消或超时中止"
+            rt.state.cancelled = True
+            rt.save()
+            raise
         except Exception as exc:  # noqa: BLE001 — 统一落到 step.error 供前端展示
             step.status = StepStatus.FAILED
             step.error = str(exc)
