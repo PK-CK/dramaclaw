@@ -443,6 +443,58 @@ def _chunked(items: list[int], size: int) -> list[list[int]]:
 #: 再往下跑只是把整集的钱烧完。
 _MAX_CONSECUTIVE_FAILURES = 3
 
+#: 同一块的重试次数与退避秒数。
+#:
+#: 图片要先经 media relay（Cloudinary/OSS）上传成公网 URL 再交给图像模型，
+#: 而 relay 那层是零重试的（storage/media_relay.py 的 upload_bytes 一次
+#: httpx.post，抛错即抛出）。一次 SSL EOF 就会判这个 beat 失败。实测同样
+#: 网络下 2MB 上传 6/6 成功，说明这类错基本都是瞬时抖动，退避重试即可。
+_CHUNK_RETRIES = 3
+_RETRY_BACKOFF_SECONDS = (5.0, 15.0, 30.0)
+
+#: 判定为「值得重试」的瞬时故障特征。配置错、额度不足这类重试也没用。
+_TRANSIENT_HINTS = (
+    "ssl",
+    "eof",
+    "timeout",
+    "timed out",
+    "connection",
+    "reset",
+    "temporarily",
+    "502",
+    "503",
+    "504",
+    "429",
+    "media relay",
+)
+
+
+def _looks_transient(error: str) -> bool:
+    lowered = str(error).lower()
+    return any(hint in lowered for hint in _TRANSIENT_HINTS)
+
+
+async def _run_chunk_with_retry(
+    rt: Runtime, label: str, attempt_once: Callable[[], Any]
+) -> None:
+    """跑一块，瞬时故障退避重试。非瞬时故障立刻抛出，不浪费时间。"""
+    last: Exception | None = None
+    for attempt in range(_CHUNK_RETRIES):
+        try:
+            await attempt_once()
+            return
+        except PipelineCancelled:
+            raise
+        except Exception as exc:  # noqa: BLE001 — 由调用方决定这块算不算失败
+            last = exc
+            if not _looks_transient(str(exc)) or attempt == _CHUNK_RETRIES - 1:
+                raise
+            wait = _RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)]
+            rt.log(f"↻ {label} 遇到瞬时故障，{wait:.0f} 秒后重试（{attempt + 1}/{_CHUNK_RETRIES - 1}）：{exc}")
+            await asyncio.sleep(wait)
+    if last is not None:
+        raise last
+
 
 def _missing_beats(rt: Runtime, beats: list[dict[str, Any]], kind: str) -> list[int]:
     """挑出还没有产物的 beat。
@@ -501,7 +553,7 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
                 mode_key=str(rt.options.get("sketch_mode_key") or "1x1_2-3"),
                 image_generation_selection=rt.options.get("image_generation_selection"),
             )
-            try:
+            async def _once(regen=regen, label=label) -> None:
                 data = _require_ok(
                     await regenerate_sketches(rt.project, rt.episode, regen, rt.user),
                     f"补草图 {label}",
@@ -515,6 +567,9 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
                 )
                 if state.status != "completed":
                     raise StepFailed(state.error or state.status)
+
+            try:
+                await _run_chunk_with_retry(rt, label, _once)
             except PipelineCancelled:
                 raise
             except Exception as exc:  # noqa: BLE001 — 单块失败不该废掉整步
@@ -632,7 +687,8 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
             mode_key=str(rt.options.get("render_mode_key") or "1x1_2-3"),
             image_generation_selection=rt.options.get("image_generation_selection"),
         )
-        try:
+
+        async def _once() -> None:
             data = _require_ok(
                 await regenerate_beats(rt.project, rt.episode, body, rt.user),
                 f"渲染 {label}",
@@ -646,6 +702,9 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
             )
             if state.status != "completed":
                 raise StepFailed(state.error or state.status)
+
+        try:
+            await _run_chunk_with_retry(rt, label, _once)
         except PipelineCancelled:
             raise
         except Exception as exc:  # noqa: BLE001 — 单块失败不该废掉整集

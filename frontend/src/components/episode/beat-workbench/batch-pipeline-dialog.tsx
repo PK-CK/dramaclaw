@@ -133,14 +133,22 @@ export function BatchPipelineDialog({
 
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent className={cn(GLASS_ALERT_DIALOG_CONTENT_CLASS, "max-w-3xl")}>
-        <AlertDialogHeader>
+      {/* 限高 + 中段独立滚动：内容再长也不能把底部按钮顶出屏幕
+          （长错误信息曾把「关闭 / 取消流水线」整排挤没） */}
+      <AlertDialogContent
+        className={cn(
+          GLASS_ALERT_DIALOG_CONTENT_CLASS,
+          "flex max-h-[85vh] max-w-3xl flex-col",
+        )}
+      >
+        <AlertDialogHeader className="shrink-0">
           <AlertDialogTitle>{t("episode.workbench.batchPipeline.title")}</AlertDialogTitle>
           <AlertDialogDescription>
             {t("episode.workbench.batchPipeline.description")}
           </AlertDialogDescription>
         </AlertDialogHeader>
 
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto">
         {/* 七步进度 */}
         <div className="space-y-1.5 rounded-md border border-white/10 p-3">
           {STEP_ORDER.map((stepId, index) => {
@@ -161,9 +169,13 @@ export function BatchPipelineDialog({
                     {t(`episode.workbench.batchPipeline.steps.${stepId}`)}
                   </div>
                   {(step?.message || step?.error) && (
+                    // 错误信息可能很长（上游报错会带整串 SSL 栈）。truncate 只在
+                    // 单行时有效，一旦父容器被撑开就失灵，会把底部按钮顶出屏幕。
+                    // 这里限高三行 + 强制断词，长错误改在 title 里看全文。
                     <div
+                      title={step?.error || step?.message}
                       className={cn(
-                        "truncate text-[11px]",
+                        "line-clamp-3 break-all text-[11px]",
                         step?.error ? "text-destructive" : "text-muted-foreground",
                       )}
                     >
@@ -287,8 +299,9 @@ export function BatchPipelineDialog({
             })}
           </div>
         )}
+        </div>
 
-        <AlertDialogFooter>
+        <AlertDialogFooter className="shrink-0">
           <AlertDialogCancel>{t("common.close", "关闭")}</AlertDialogCancel>
           {active ? (
             <Button variant="ghost" onClick={() => void handleCancel()} disabled={cancel.isPending}>
