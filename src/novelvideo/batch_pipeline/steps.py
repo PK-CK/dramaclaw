@@ -1,4 +1,4 @@
-"""六个步骤的执行体。
+"""七个步骤的执行体。
 
 每一步都复用界面上那颗按钮背后的同一条路径——直接调对应的路由函数，
 让它照常入队既有的 task_type，然后等它跑完。不另起一套生成逻辑：
@@ -51,6 +51,10 @@ class StepFailed(RuntimeError):
 
 class PipelineCancelled(RuntimeError):
     """用户在闸门上取消，或点了取消按钮。"""
+
+
+class GateTimedOutSkip(RuntimeError):
+    """闸门超时未放行，且该闸门声明超时=跳过而非失败（闸门 5：不点头就不出片）。"""
 
 
 @dataclass
@@ -119,6 +123,17 @@ class Runtime:
         if self.state.cancelled:
             raise PipelineCancelled("用户取消了批量流水线")
 
+    def step_progress(self, step_id: StepId, message: str, progress: float) -> None:
+        """把循环进度写进 state.json（弹窗读这里），并同步任务面板。
+
+        log() 只到任务面板；不落盘的话弹窗里的步骤行永远一片空白。
+        """
+        step = self.state.step(step_id)
+        step.message = message
+        step.progress = progress
+        self.save()
+        self.log(message, progress=progress)
+
 
 # ── 通用工具 ──────────────────────────────────────────────────────────────
 
@@ -132,6 +147,7 @@ async def _await_task(
     scope: str | None = None,
     label: str = "",
     timeout: float = _TASK_TIMEOUT_SECONDS,
+    progress_step: StepId | None = None,
 ) -> Any:
     """轮询子任务直到终态。返回 TaskState。
 
@@ -152,6 +168,8 @@ async def _await_task(
         matches = state is not None and (not task_id or state.task_id == task_id)
         if matches and state.status in _TERMINAL:
             return state
+        if matches and progress_step is not None:
+            _mirror_subtask_progress(rt, progress_step, state)
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
     raise StepFailed(f"{label or task_type} 超时（{int(timeout / 60)} 分钟未结束）")
 
@@ -167,16 +185,45 @@ def _task_id_of(data: dict[str, Any]) -> str:
     return str(data.get("task_id") or "")
 
 
+def _mirror_subtask_progress(rt: Runtime, step_id: StepId, task_state: Any) -> None:
+    """把子任务的进度镜像到流水线步骤上，弹窗才看得到 x/54。
+
+    渲染是一整个大子任务，进度只上报到任务面板。轮询 2 秒一轮、
+    一跑几十分钟，必须节流：进度或文案有实质变化才写盘。
+    """
+    progress = float(getattr(task_state, "progress", 0.0) or 0.0)
+    message = str(getattr(task_state, "current_task", "") or "")
+    step = rt.state.step(step_id)
+    if abs(progress - step.progress) < 0.01 and (not message or message == step.message):
+        return
+    step.progress = progress
+    if message:
+        step.message = message
+    rt.save()
+
+
 #: 闸门归属的步骤。挂起等人时把该步标成 waiting_gate，前端才能显示暂停态。
 _GATE_STEP: dict[GateId, StepId] = {
     GateId.SCENE_ASSIGNMENT: StepId.MATCH_SCENES,
     GateId.SKETCH_SAMPLE: StepId.SKETCHES,
     GateId.RENDER_SAMPLE: StepId.RENDER,
+    GateId.VIDEO_PROMPTS: StepId.VIDEO_PROMPTS,
+    GateId.VIDEO_GENERATION: StepId.VIDEOS,
 }
 
 
-async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) -> None:
-    """挂起等人确认。已放行（或已预授权）就直接过。"""
+async def _wait_for_gate(
+    rt: Runtime,
+    gate_id: GateId,
+    payload: dict[str, Any],
+    *,
+    skip_on_timeout: bool = False,
+) -> None:
+    """挂起等人确认。已放行（或已预授权）就直接过。
+
+    skip_on_timeout：超时不算失败，抛 GateTimedOutSkip 让编排层把该步
+    标成 skipped 后正常收官——闸门 5 用它实现「不点头就不出片」。
+    """
     # 用完即弃：refresh_signals 会整份替换 state.gates，任何跨越它的
     # gate 引用都会脱钩成孤儿（写进去的值再也落不了盘）。step 不受影响，
     # 因为 refresh 不动 steps——但别指望这个巧合。
@@ -203,6 +250,10 @@ async def _wait_for_gate(rt: Runtime, gate_id: GateId, payload: dict[str, Any]) 
             rt.log(f"闸门「{gate_id.value}」已确认，继续")
             return
         await asyncio.sleep(_POLL_INTERVAL_SECONDS)
+    if skip_on_timeout:
+        raise GateTimedOutSkip(
+            f"闸门「{gate_id.value}」超时未放行，已跳过出片（未产生出片开销）"
+        )
     raise StepFailed(f"闸门「{gate_id.value}」等待超时，流水线停在此处（未产生后续开销）")
 
 
@@ -395,7 +446,11 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
         )
         if state.status != "completed":
             failed.append(f"{scope}: {state.error or state.status}")
-        rt.log(f"草图 {index}/{len(tasks)} 完成", progress=index / max(len(tasks), 1))
+        rt.step_progress(
+            StepId.SKETCHES,
+            f"草图 {index}/{len(tasks)} 完成",
+            index / max(len(tasks), 1),
+        )
     if failed:
         raise StepFailed("草图生成失败：" + "；".join(failed))
 
@@ -407,7 +462,7 @@ async def run_sketches(rt: Runtime) -> dict[str, Any]:
     return {"scopes": scopes}
 
 
-# ── 第 4 步：批量渲染 ⊕ 视频提示词（闸门 3）─────────────────────────────
+# ── 第 4 步：批量渲染（闸门 3）───────────────────────────────────────────
 
 
 async def run_render(rt: Runtime) -> dict[str, Any]:
@@ -435,22 +490,37 @@ async def run_render(rt: Runtime) -> dict[str, Any]:
         task_id=_task_id_of(data),
         scope=scope or None,
         label="批量渲染",
+        progress_step=StepId.RENDER,
     )
     if state.status != "completed":
         raise StepFailed(f"批量渲染失败：{state.error or state.status}")
-
-    prompts = await _build_video_prompts(rt)
 
     await _wait_for_gate(
         rt,
         GateId.RENDER_SAMPLE,
         {
             "beats": beat_numbers,
-            "prompt_samples": prompts["samples"],
-            "hint": "抽查画风、角色脸、背景是否一致，并看一眼视频提示词，确认后开始出片",
+            "hint": "抽查画风、角色脸、背景是否一致，确认后继续生成视频提示词",
         },
     )
-    return {"beats": len(beat_numbers), **prompts["stats"]}
+    return {"beats": len(beat_numbers)}
+
+
+# ── 第 5 步：逐 beat 生成视频提示词（闸门 4）─────────────────────────────
+
+
+async def run_video_prompts(rt: Runtime) -> dict[str, Any]:
+    prompts = await _build_video_prompts(rt)
+
+    await _wait_for_gate(
+        rt,
+        GateId.VIDEO_PROMPTS,
+        {
+            "prompt_samples": prompts["samples"],
+            "hint": "抽查视频提示词的文案与运镜，确认后进入出片授权（闸门 5）",
+        },
+    )
+    return dict(prompts["stats"])
 
 
 async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
@@ -513,9 +583,10 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
         if len(samples) < 3:
             samples.append({"beat_number": beat_num, "prompt": final})
 
-        rt.log(
+        rt.step_progress(
+            StepId.VIDEO_PROMPTS,
             f"视频提示词 {position + 1}/{len(beats)}",
-            progress=(position + 1) / max(len(beats), 1),
+            (position + 1) / max(len(beats), 1),
         )
 
     if skipped:
@@ -527,7 +598,7 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
     }
 
 
-# ── 第 5 步：逐 beat 出视频 ──────────────────────────────────────────────
+# ── 第 6 步：逐 beat 出视频（闸门 5）─────────────────────────────────────
 
 
 async def run_videos(rt: Runtime) -> dict[str, Any]:
@@ -535,6 +606,23 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
     from novelvideo.api.schemas import SingleVideoRequest
 
     _store, _script, beats = await _load_script(rt)
+
+    # 闸门 5 是钱闸：过了这道门才开始按秒计费。不预授权、也不来点头，
+    # 超时走 GateTimedOutSkip——出片步标 skipped，前面的成果照常保留。
+    await _wait_for_gate(
+        rt,
+        GateId.VIDEO_GENERATION,
+        {
+            "beats": len(beats),
+            "cost_estimate": dict(rt.state.cost_estimate),
+            "hint": (
+                "确认后开始批量出片（按秒计费）。不确认则到时自动跳过出片，"
+                "已生成的图与提示词全部保留"
+            ),
+        },
+        skip_on_timeout=True,
+    )
+
     backend = str(rt.options.get("video_backend") or "grok_720")
     # resolution/duration/ratio 只在显式给了值时才塞进请求体：路由用
     # `"resolution" in model_fields_set` 判断用户有没有动过它，白填一个
@@ -545,7 +633,7 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
         value = rt.options.get(key)
         if value not in (None, ""):
             extra[key] = value
-    semaphore = asyncio.Semaphore(max(1, int(rt.state.video_concurrency or 2)))
+    semaphore = asyncio.Semaphore(max(1, int(rt.state.video_concurrency or 3)))
 
     done = 0
     failed: list[dict[str, Any]] = []
@@ -580,7 +668,7 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
                 rt.log(f"❌ Beat {beat_num} 出片失败：{exc}")
                 return
         done += 1
-        rt.log(f"出片 {done}/{total}", progress=done / max(total, 1))
+        rt.step_progress(StepId.VIDEOS, f"出片 {done}/{total}", done / max(total, 1))
 
     await asyncio.gather(*(_one(beat) for beat in beats))
 
@@ -604,6 +692,7 @@ STEP_RUNNERS: dict[StepId, Callable[[Runtime], Any]] = {
     StepId.MATCH_SCENES: run_match_scenes,
     StepId.SKETCHES: run_sketches,
     StepId.RENDER: run_render,
+    StepId.VIDEO_PROMPTS: run_video_prompts,
     StepId.VIDEOS: run_videos,
 }
 
@@ -612,13 +701,14 @@ STEP_LABELS: dict[StepId, str] = {
     StepId.PLAN_ASSETS: "场景与道具规划",
     StepId.MATCH_SCENES: "场次交叉验证",
     StepId.SKETCHES: "批量草图",
-    StepId.RENDER: "批量渲染与视频提示词",
+    StepId.RENDER: "批量渲染",
+    StepId.VIDEO_PROMPTS: "视频提示词",
     StepId.VIDEOS: "逐镜出片",
 }
 
 
 async def run_pipeline(rt: Runtime, *, start_from: StepId | None = None) -> dict[str, Any]:
-    """按顺序跑完六步。已完成的步骤会跳过，支持断点续跑。"""
+    """按顺序跑完七步。已完成的步骤会跳过，支持断点续跑。"""
     started = start_from is None
     for step_id in StepId:
         if not started:
@@ -638,6 +728,14 @@ async def run_pipeline(rt: Runtime, *, start_from: StepId | None = None) -> dict
 
         try:
             step.result = await STEP_RUNNERS[step_id](rt) or {}
+        except GateTimedOutSkip as exc:
+            # 目前只有闸门 5 走到这：不放行=不出片，是用户的选择而非故障。
+            # 标 skipped 后正常收官，前面步骤的成果全部保留。
+            step.status = StepStatus.SKIPPED
+            step.message = str(exc)
+            rt.save()
+            rt.log(f"⏭ {STEP_LABELS[step_id]}：{exc}")
+            break
         except PipelineCancelled:
             step.status = StepStatus.PENDING
             step.message = "已取消"

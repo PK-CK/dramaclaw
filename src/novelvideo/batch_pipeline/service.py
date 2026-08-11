@@ -116,7 +116,7 @@ def estimate_cost(beats: list[dict[str, Any]], *, resolution: str = "720p") -> d
 
 
 def summarize(state: PipelineState) -> dict[str, Any]:
-    """给前端的精简视图：六步进度 + 三闸门状态。"""
+    """给前端的精简视图：七步进度 + 五闸门状态。"""
     return {
         "project": state.project,
         "episode": state.episode,

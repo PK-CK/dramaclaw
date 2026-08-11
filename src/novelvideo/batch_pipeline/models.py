@@ -8,14 +8,15 @@ from typing import Any
 
 
 class StepId(str, Enum):
-    """六个步骤。顺序即执行顺序。"""
+    """七个步骤。顺序即执行顺序。"""
 
     PREFLIGHT = "preflight"          # 第 0 步：前置体检（零成本）
     PLAN_ASSETS = "plan_assets"      # 第 1 步：场景 + 道具规划
     MATCH_SCENES = "match_scenes"    # 第 2 步：场次交叉验证 → 补 scene_ref
     SKETCHES = "sketches"            # 第 3 步：批量草图
-    RENDER = "render"                # 第 4 步：批量渲染 ⊕ 视频提示词
-    VIDEOS = "videos"                # 第 5 步：逐 beat 出视频
+    RENDER = "render"                # 第 4 步：批量渲染
+    VIDEO_PROMPTS = "video_prompts"  # 第 5 步：逐 beat 生成视频提示词（文案）
+    VIDEOS = "videos"                # 第 6 步：逐 beat 出视频
 
 
 class StepStatus(str, Enum):
@@ -28,11 +29,13 @@ class StepStatus(str, Enum):
 
 
 class GateId(str, Enum):
-    """三个闸门。闸门 1 强制人工确认，2/3 可预授权自动放行。"""
+    """五个闸门。闸门 1 强制人工确认，其余可预授权自动放行。"""
 
     SCENE_ASSIGNMENT = "scene_assignment"  # 闸门 1：场景分配表（决定后续所有图的背景）
     SKETCH_SAMPLE = "sketch_sample"        # 闸门 2：草图抽查（看姿势）
     RENDER_SAMPLE = "render_sample"        # 闸门 3：渲染抽查（看画风/角色脸/背景）
+    VIDEO_PROMPTS = "video_prompts"        # 闸门 4：视频提示词抽查（看文案）
+    VIDEO_GENERATION = "video_generation"  # 闸门 5：出片授权（按秒计费；超时不放行则跳过出片收官）
 
 
 #: 闸门 1 不允许预授权：它决定后面每一张图的背景，错了要全部重出。
@@ -90,7 +93,7 @@ class PipelineState:
     steps: dict[str, StepState] = field(default_factory=dict)
     gates: dict[str, GateState] = field(default_factory=dict)
     auto_approve: list[str] = field(default_factory=list)   # 预授权放行的闸门
-    video_concurrency: int = 2
+    video_concurrency: int = 3
     resolution: str = "720p"
     failed_beats: list[int] = field(default_factory=list)
     cost_estimate: dict[str, Any] = field(default_factory=dict)
@@ -152,7 +155,7 @@ class PipelineState:
             project=str(data.get("project") or ""),
             episode=int(data.get("episode") or 0),
             auto_approve=list(data.get("auto_approve") or []),
-            video_concurrency=int(data.get("video_concurrency") or 2),
+            video_concurrency=int(data.get("video_concurrency") or 3),
             resolution=str(data.get("resolution") or "720p"),
             failed_beats=list(data.get("failed_beats") or []),
             cost_estimate=dict(data.get("cost_estimate") or {}),

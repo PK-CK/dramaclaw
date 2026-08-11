@@ -36,7 +36,7 @@ class BatchPipelineStartRequest(BaseModel):
     auto_approve: list[str] = Field(default_factory=list)
     start_from: Optional[str] = None
     resolution: str = "720p"
-    video_concurrency: int = 2
+    video_concurrency: int = 3
     #: 透传给各步骤的生成参数（风格、图像模型、视频后端等）
     options: dict[str, Any] = Field(default_factory=dict)
 

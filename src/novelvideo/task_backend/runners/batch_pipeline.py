@@ -50,7 +50,7 @@ async def _run_batch_pipeline_async(
     state.auto_approve = [
         gate for gate in (config.get("auto_approve") or []) if gate in {g.value for g in GateId}
     ]
-    state.video_concurrency = max(1, int(config.get("video_concurrency") or 2))
+    state.video_concurrency = max(1, int(config.get("video_concurrency") or 3))
     state.resolution = str(config.get("resolution") or "720p")
 
     start_from = None
