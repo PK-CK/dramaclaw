@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { jsonWithBackendError } from "@/lib/api-errors";
@@ -110,13 +111,24 @@ function base(project: string, episode: number) {
   return p`api/v1/projects/${project}/episodes/${episode}/batch-pipeline`;
 }
 
+/** 步骤进度的指纹。变了就说明有新产物落盘，该把 beats 列表拉一遍。 */
+function progressSignature(state: BatchPipelineState | undefined): string {
+  if (!state) return "";
+  return state.steps
+    .map((s) => `${s.step_id}:${s.status}:${s.progress.toFixed(3)}`)
+    .join("|");
+}
+
 export function useBatchPipelineStatus(
   project: string,
   episode: number,
-  /** 弹窗关着就不查——闲置时不打服务端。 */
+  /** 关着的弹窗不查；工作台常驻的那个传 true，好让 beat 上的产物实时刷新。 */
   enabled = false,
 ) {
-  return useQuery({
+  const queryClient = useQueryClient();
+  const lastSignature = useRef("");
+
+  const query = useQuery({
     queryKey: queryKeys.batchPipelineStatus(project, episode),
     queryFn: ({ signal }) =>
       jsonWithBackendError<OkResponse<BatchPipelineState>>(
@@ -126,12 +138,26 @@ export function useBatchPipelineStatus(
         }),
       ),
     enabled: enabled && !!project && episode > 0,
-    // 弹窗开着就一直轮询（关着由 enabled 兜底）：start 刚返回时 runner
-    // 还没把第一步标 running，若此刻按「非 active」停掉轮询就再也醒不来。
-    // 在跑（含卡在闸门）2s 一次，静置 5s 一次。
-    refetchInterval: (query) =>
-      isPipelineActive(query.state.data?.data) ? 2000 : 5000,
+    // 在跑（含卡在闸门）2s 一次；静置 15s 一次——工作台常驻会一直轮，
+    // 静置期间只是读一个小 JSON，但没必要 5s 一次。
+    // start 刚返回时 runner 还没把第一步标 running，所以静置也要轮，
+    // 否则按「非 active」停掉就再也醒不来。
+    refetchInterval: (q) => (isPipelineActive(q.state.data?.data) ? 2000 : 15000),
   });
+
+  // 每有一步推进就把 beats 拉一遍：草图/渲染图/成片的 URL 是后端按盘上
+  // 文件现算的（episodes.py 的 get_beats），不主动失效的话，工作台会一直
+  // 拿着开跑前的缓存——产物早就落盘了，界面还显示「尚未生成」。
+  const signature = progressSignature(query.data?.data);
+  useEffect(() => {
+    if (!signature || signature === lastSignature.current) return;
+    lastSignature.current = signature;
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.beats(project, episode),
+    });
+  }, [signature, queryClient, project, episode]);
+
+  return query;
 }
 
 export function useBatchPipelineEstimate(

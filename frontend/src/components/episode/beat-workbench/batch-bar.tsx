@@ -36,6 +36,8 @@ import { CreditCostInline } from "@/components/credit-cost-inline";
 import { CreditCostPill } from "@/components/credits/credit-visual";
 import type { Beat } from "@/types/episode";
 
+import { useBatchPipelineStatus } from "@/lib/queries/batch-pipeline";
+
 import { BatchPipelineDialog } from "./batch-pipeline-dialog";
 import { RenderModelSelect } from "./render-settings-controls";
 import { SketchModelSelect, SketchAspectCheckbox } from "./sketch-settings-controls";
@@ -126,6 +128,10 @@ export function BatchBar({
       : null);
 
   const [batchPipelineOpen, setBatchPipelineOpen] = useState(false);
+  // 常驻监听：流水线每推进一步就把 beats 拉一遍，草图/渲染图/成片会
+  // 在对应的 Beat 卡片上实时出现。不挂这个的话，弹窗关着就没人失效缓存，
+  // 产物早已落盘而界面一直显示「尚未生成」。
+  useBatchPipelineStatus(project, episode, true);
   const [errorDialog, setErrorDialog] = useState<{
     title: string;
     description: string;

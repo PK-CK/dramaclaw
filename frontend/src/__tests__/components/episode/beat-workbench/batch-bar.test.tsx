@@ -289,6 +289,20 @@ vi.mock("@/lib/queries/generation-credit-cost", () => ({
   }),
 }));
 
+// BatchBar 常驻挂了一个流水线状态监听（用来在产物落盘时失效 beats 缓存），
+// 且它 import 的弹窗组件也从这个模块取值——mock 必须补齐弹窗用到的每个
+// 具名导出，否则模块求值阶段就会报缺导出。
+vi.mock("@/lib/queries/batch-pipeline", () => ({
+  useBatchPipelineStatus: () => ({ data: undefined }),
+  useBatchPipelineEstimate: () => ({ data: undefined }),
+  useStartBatchPipeline: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDecideBatchGate: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useCancelBatchPipeline: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  isPipelineActive: () => false,
+  pendingGate: () => null,
+  MANDATORY_GATES: ["scene_assignment"],
+}));
+
 vi.mock("@/hooks/use-task-controller", () => ({
   useTaskController: (opts: { key: { taskType: string } }) => ({
     started: false,
