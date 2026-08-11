@@ -41,11 +41,17 @@ const STEP_ORDER: BatchStepId[] = [
   "match_scenes",
   "sketches",
   "render",
+  "video_prompts",
   "videos",
 ];
 
-/** 可预授权的两个闸门。闸门 1 服务端硬拒，不放进来。 */
-const PREAUTHORIZABLE: BatchGateId[] = ["sketch_sample", "render_sample"];
+/** 可预授权的四个闸门。闸门 1 服务端硬拒，不放进来。 */
+const PREAUTHORIZABLE: BatchGateId[] = [
+  "sketch_sample",
+  "render_sample",
+  "video_prompts",
+  "video_generation",
+];
 
 interface BatchPipelineDialogProps {
   open: boolean;
@@ -59,6 +65,7 @@ function StepIcon({ status }: { status: BatchStepState["status"] }) {
   if (status === "waiting_gate") return <PauseCircle className="size-3.5 text-amber-400" />;
   if (status === "done") return <Check className="size-3.5 text-emerald-400" />;
   if (status === "failed") return <X className="size-3.5 text-destructive" />;
+  if (status === "skipped") return <Check className="size-3.5 text-muted-foreground/60" />;
   return <CircleDashed className="size-3.5 text-muted-foreground/60" />;
 }
 
@@ -93,7 +100,7 @@ export function BatchPipelineDialog({
       const res = await start.mutateAsync({
         autoApprove: preauthorized,
         resolution: "720p",
-        videoConcurrency: 2,
+        videoConcurrency: 3,
       });
       toast.success(res.message);
     } catch (error) {
@@ -134,7 +141,7 @@ export function BatchPipelineDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        {/* 六步进度 */}
+        {/* 七步进度 */}
         <div className="space-y-1.5 rounded-md border border-white/10 p-3">
           {STEP_ORDER.map((stepId, index) => {
             const step = state?.steps.find((s) => s.step_id === stepId);
@@ -288,7 +295,13 @@ export function BatchPipelineDialog({
               {t("episode.workbench.batchPipeline.cancel")}
             </Button>
           ) : (
-            <AlertDialogAction onClick={() => void handleStart()} disabled={start.isPending}>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                void handleStart();
+              }}
+              disabled={start.isPending}
+            >
               {start.isPending && <Loader2 className="size-3 animate-spin" />}
               {t("episode.workbench.batchPipeline.start")}
             </AlertDialogAction>

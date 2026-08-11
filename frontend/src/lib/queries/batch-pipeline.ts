@@ -13,6 +13,7 @@ export type BatchStepId =
   | "match_scenes"
   | "sketches"
   | "render"
+  | "video_prompts"
   | "videos";
 
 export type BatchStepStatus =
@@ -26,7 +27,9 @@ export type BatchStepStatus =
 export type BatchGateId =
   | "scene_assignment"
   | "sketch_sample"
-  | "render_sample";
+  | "render_sample"
+  | "video_prompts"
+  | "video_generation";
 
 /** 闸门 1 决定后面每一张图的背景，服务端不接受预授权。 */
 export const MANDATORY_GATES: readonly BatchGateId[] = ["scene_assignment"];
@@ -165,7 +168,7 @@ export function useStartBatchPipeline(project: string, episode: number) {
             auto_approve: params.autoApprove ?? [],
             start_from: params.startFrom ?? null,
             resolution: params.resolution ?? "720p",
-            video_concurrency: params.videoConcurrency ?? 2,
+            video_concurrency: params.videoConcurrency ?? 3,
             options: params.options ?? {},
           },
           throwHttpErrors: false,
@@ -236,12 +239,17 @@ export function pendingGate(
   state: BatchPipelineState | undefined,
 ): BatchGateState | null {
   if (!state) return null;
-  const running = state.steps.find((step) => step.status === "running");
+  // waiting_gate 才是「正在等人」的常态；只匹配 running 会让放行按钮永不出现
+  const running = state.steps.find(
+    (step) => step.status === "running" || step.status === "waiting_gate",
+  );
   if (!running) return null;
   const gateForStep: Partial<Record<BatchStepId, BatchGateId>> = {
     match_scenes: "scene_assignment",
     sketches: "sketch_sample",
     render: "render_sample",
+    video_prompts: "video_prompts",
+    videos: "video_generation",
   };
   const gateId = gateForStep[running.step_id];
   if (!gateId) return null;

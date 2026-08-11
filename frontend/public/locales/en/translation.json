@@ -2661,9 +2661,9 @@
       },
       "batchPipeline": {
         "button": "Batch pipeline",
-        "tooltip": "Run preflight → planning → scene matching → sketches → render → video as one pass, pausing at three gates",
+        "tooltip": "Run preflight → planning → scene matching → sketches → render → video prompts → video as one pass, pausing at five gates",
         "title": "Batch pipeline",
-        "description": "Runs six steps in order. The scene assignment table always needs a human sign-off; the sketch and render spot checks can be pre-authorized.",
+        "description": "Runs seven steps in order. The scene assignment table always needs a human sign-off; the other gates can be pre-authorized. Leave 'Video generation' unchecked and the pipeline stops at the video gate — no approval, no spend.",
         "start": "Start batch",
         "cancel": "Cancel pipeline",
         "cancelled": "Cancellation requested",
@@ -2683,13 +2683,16 @@
           "plan_assets": "Scene and prop planning",
           "match_scenes": "Scene cross-check → backfill refs",
           "sketches": "Batch sketches",
-          "render": "Batch render and video prompts",
+          "render": "Batch render",
+          "video_prompts": "Video prompts",
           "videos": "Per-shot video"
         },
         "gates": {
           "scene_assignment": "Gate 1 · Scene assignment table",
           "sketch_sample": "Gate 2 · Sketch spot check",
-          "render_sample": "Gate 3 · Render spot check"
+          "render_sample": "Gate 3 · Render spot check",
+          "video_prompts": "Gate 4 · Video prompts",
+          "video_generation": "Gate 5 · Video generation"
         }
       },
       "verify": {

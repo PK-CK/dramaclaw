@@ -2661,9 +2661,9 @@
       },
       "batchPipeline": {
         "button": "批量流水线",
-        "tooltip": "把体检→规划→场次校验→草图→渲染→出片六步串起来跑，中途在三个闸门停下等确认",
+        "tooltip": "把体检→规划→场次校验→草图→渲染→视频文案→出片七步串起来跑，中途在五个闸门停下等确认",
         "title": "批量流水线",
-        "description": "按顺序跑完六步。场景分配表必须人工确认；草图与渲染抽查可预授权自动放行。",
+        "description": "按顺序跑完七步。场景分配表必须人工确认；其余闸门可预授权自动放行。不勾「生成视频」时，流水线做完文案就停在出片授权，不确认就不出片、不花钱。",
         "start": "开始批量",
         "cancel": "取消流水线",
         "cancelled": "已请求取消",
@@ -2683,13 +2683,16 @@
           "plan_assets": "场景与道具规划",
           "match_scenes": "场次交叉验证 → 补场景关联",
           "sketches": "批量草图",
-          "render": "批量渲染与视频提示词",
+          "render": "批量渲染",
+          "video_prompts": "生成视频文案（提示词）",
           "videos": "逐镜出片"
         },
         "gates": {
           "scene_assignment": "闸门 1 · 场景分配表",
           "sketch_sample": "闸门 2 · 草图抽查",
-          "render_sample": "闸门 3 · 渲染抽查"
+          "render_sample": "闸门 3 · 渲染抽查",
+          "video_prompts": "闸门 4 · 生成视频文案",
+          "video_generation": "闸门 5 · 生成视频"
         }
       },
       "verify": {
