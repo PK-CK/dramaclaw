@@ -72,6 +72,8 @@ export const queryKeys = {
     ["projects", p, "episodes", ep, "beats"] as const,
   batchPipelineStatus: (p: string, ep: number) =>
     ["projects", p, "episodes", ep, "batch-pipeline"] as const,
+  aspectAssets: (p: string, ep: number) =>
+    ["projects", p, "episodes", ep, "aspect-assets"] as const,
   grids: (p: string, ep: number) =>
     ["projects", p, "episodes", ep, "grids"] as const,
   sketchRegenQueue: (p: string, ep: number) =>

@@ -41,6 +41,13 @@ class BatchPipelineStartRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class AspectSwitchRequest(BaseModel):
+    """切换画幅。from_aspect 由前端给——画幅是前端状态，服务端不知道当前是哪个。"""
+
+    from_aspect: str
+    to_aspect: str
+
+
 class GateDecisionRequest(BaseModel):
     approved: bool = True
     #: 人工在闸门上做的修正，原样并进 gate.payload 供审计
@@ -260,3 +267,88 @@ async def estimate_batch_pipeline(
     script = await store.get_script_as_dict(episode_num)
     beats = list((script or {}).get("beats") or [])
     return {"ok": True, "data": service.estimate_cost(beats, resolution=resolution)}
+
+
+# ── 画幅资产隔离 ────────────────────────────────────────────────────────
+
+
+@router.get("/projects/{project}/episodes/{episode_num}/aspect-assets")
+async def list_aspect_assets(
+    project: str,
+    episode_num: int,
+    current: str = "",
+    user: dict = Depends(get_api_user),
+):
+    """盘点每个画幅各有多少产物。零开销，只数文件。
+
+    current 传当前生效的画幅：生效目录里的那套不在归档里，不告诉服务端
+    当前是哪个，刚生成完还没切换过的项目会显示成「一套都没有」。
+    """
+    from novelvideo.batch_pipeline import aspect_assets
+
+    resolved = await resolve_project_scope(project, user, required_role="viewer")
+    out = resolved.output_dir
+    live_aspect = aspect_assets.normalize_aspect(current)
+
+    sets = {k: v.to_dict() for k, v in aspect_assets.inventory(out, episode_num).items()}
+    live = aspect_assets.live_inventory(out, episode_num, live_aspect)
+    # 生效的那套归到当前画幅名下，取归档与生效的较大者——归档过的文件
+    # 仍然硬链在生效目录里，两边会重复计数
+    merged = sets[live_aspect]
+    for kind in ("sketches", "frames", "videos"):
+        merged[kind] = max(merged[kind], getattr(live, kind))
+    merged["total"] = merged["sketches"] + merged["frames"] + merged["videos"]
+
+    return {
+        "ok": True,
+        "data": {
+            "current": live_aspect,
+            "supported": list(aspect_assets.SUPPORTED_ASPECTS),
+            "sets": sets,
+        },
+    }
+
+
+@router.post("/projects/{project}/episodes/{episode_num}/aspect-assets/switch")
+async def switch_aspect_assets(
+    project: str,
+    episode_num: int,
+    body: AspectSwitchRequest,
+    user: dict = Depends(get_api_user),
+):
+    """切换画幅：归档当前那套，恢复目标画幅那套（没有就留空）。
+
+    走硬链接，秒级完成、不额外占空间。目标画幅没有产物时生效目录会是空的，
+    此时点批量流水线会照常按新画幅重出——跳过逻辑看的就是生效目录。
+    """
+    from novelvideo.batch_pipeline import aspect_assets
+
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+
+    # 有流水线在跑时不许切：它正往生效目录里写，切换会把半成品归档到错误的画幅下
+    running = get_task_manager().get_task_for_project(
+        resolved.ctx, TASK_TYPE, episode_num
+    )
+    if running is not None and running.status not in _TERMINAL_TASK_STATUS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"第 {episode_num} 集的批量流水线正在跑（{running.status}），请先等它结束或取消，再切画幅",
+        )
+
+    result = aspect_assets.switch(
+        resolved.output_dir,
+        episode_num,
+        from_aspect=body.from_aspect,
+        to_aspect=body.to_aspect,
+    )
+    logger.info(
+        "[%s] EP%d 画幅切换 %s → %s：归档 %d，恢复 %d",
+        project, episode_num, result["from"], result["to"],
+        result["archived"], result["restored"],
+    )
+    message = (
+        f"已切到 {result['to']}：归档 {result['archived']} 个产物，恢复 {result['restored']} 个"
+        if result["changed"]
+        else "画幅未变"
+    )
+    return {"ok": True, "data": result, "message": message}

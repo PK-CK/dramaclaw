@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { Brush, Clapperboard, Loader2, Play, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 
+import { useSwitchAspectAssets } from "@/lib/queries/aspect-assets";
 import { useEpisodeBeats, useEpisodeDetail } from "@/lib/queries/episodes";
 import { useBeatStates } from "@/hooks/use-beat-states";
 import { useBeatsWorkbenchParam } from "@/hooks/use-beats-workbench-param";
@@ -209,18 +210,26 @@ function BeatsTabContent() {
   const [pendingAspect, setPendingAspect] = useState<SketchAspectRatio | null>(
     null,
   );
+  const switchAspectAssets = useSwitchAspectAssets(project, epNum);
   const hasGeneratedAssets = useMemo(
     () => beats.some((b) => b.sketch_url || b.frame_url || b.video_url),
     [beats],
   );
   const applyAspect = useCallback(
     (next: SketchAspectRatio) => {
+      const previous = orientation;
       setOrientation(next);
       void updateProject
         .mutateAsync({ aspect_ratio: aspectRatioForOrientation(next) })
         .catch(() => toast.error(t("common.error")));
+      // 产物成套换过去：不换的话生效目录里还是旧比例的图，而跳过逻辑只看
+      // 文件在不在——点批量流水线会整步跳过，画幅改了等于没改。
+      void switchAspectAssets
+        .mutateAsync({ from: previous, to: next })
+        .then((res) => toast.success(res.message))
+        .catch((error) => toast.error(backendErrorToastMessage(error, t)));
     },
-    [setOrientation, t, updateProject],
+    [orientation, setOrientation, switchAspectAssets, t, updateProject],
   );
   const setSketchAspectRatio = useCallback(
     (next: SketchAspectRatio) => {
