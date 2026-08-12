@@ -2869,7 +2869,9 @@
       "modelPlaceholder": "选择草图模型",
       "aspectRatio": "画幅",
       "wide16x9": "16:9",
-      "aspectChangeHint": "切换画幅只影响新生成的内容，已生成的资产需重新生成才会更新为新比例。"
+      "aspectChangeHint": "切换画幅只影响新生成的内容，已生成的资产需重新生成才会更新为新比例。",
+      "aspectNoCrop": "零裁切",
+      "aspectCrop": "裁 {{pct}}%"
     }
   },
   "audioType": {

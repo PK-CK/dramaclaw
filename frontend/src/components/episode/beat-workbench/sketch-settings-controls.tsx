@@ -8,6 +8,12 @@ import { toast } from "sonner";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 import {
+  ASPECT_OPTIONS,
+  cropCostForAspect,
+  DEFAULT_ORIENTATION,
+  orientationForAspectRatio,
+} from "@/lib/aspect-ratio";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -121,7 +127,7 @@ export function SketchAspectCheckbox({
   flat?: boolean;
 }) {
   const { t } = useTranslation();
-  const selectedValue = aspectRatio === "16:9" ? "16:9" : "2:3";
+  const selectedValue = orientationForAspectRatio(aspectRatio) ?? DEFAULT_ORIENTATION;
 
   return (
     <div className={cn(
@@ -137,13 +143,13 @@ export function SketchAspectCheckbox({
         value={selectedValue}
         disabled={disabled}
         onValueChange={(value) => {
-          if (!value) return;
-          onAspectRatioChange(value === "16:9" ? "16:9" : "2:3");
+          const next = orientationForAspectRatio(value);
+          if (next) onAspectRatioChange(next);
         }}
       >
         <SelectTrigger
           aria-label={t("episode.sketchSettings.aspectRatio")}
-          className={cn(WORKBENCH_SELECT_TRIGGER_CLASS, "w-[70px]")}
+          className={cn(WORKBENCH_SELECT_TRIGGER_CLASS, "w-[76px]")}
         >
           <SelectValue>{() => selectedValue}</SelectValue>
         </SelectTrigger>
@@ -153,12 +159,34 @@ export function SketchAspectCheckbox({
           alignItemWithTrigger={false}
           className={WORKBENCH_SELECT_CONTENT_CLASS}
         >
-          <SelectItem value="2:3" className={WORKBENCH_SELECT_ITEM_CLASS}>
-            2:3
-          </SelectItem>
-          <SelectItem value="16:9" className={WORKBENCH_SELECT_ITEM_CLASS}>
-            16:9
-          </SelectItem>
+          {/* 每项标出相对出片比例(9:16)的裁切代价：选横屏画幅会被裁掉
+              大半个画面，不标出来用户看不见这个代价。 */}
+          {ASPECT_OPTIONS.map((ratio) => {
+            const cost = cropCostForAspect(ratio);
+            return (
+              <SelectItem
+                key={ratio}
+                value={ratio}
+                className={WORKBENCH_SELECT_ITEM_CLASS}
+              >
+                <span className="flex w-full items-center justify-between gap-3">
+                  <span>{ratio}</span>
+                  <span
+                    className={cn(
+                      "text-[10px]",
+                      cost === 0 ? "text-emerald-400" : "text-muted-foreground/70",
+                    )}
+                  >
+                    {cost === 0
+                      ? t("episode.sketchSettings.aspectNoCrop")
+                      : t("episode.sketchSettings.aspectCrop", {
+                          pct: (cost * 100).toFixed(1),
+                        })}
+                  </span>
+                </span>
+              </SelectItem>
+            );
+          })}
         </SelectContent>
       </Select>
     </div>

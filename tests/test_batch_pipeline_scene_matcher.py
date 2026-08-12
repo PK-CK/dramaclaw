@@ -316,6 +316,48 @@ def test_strip_enhancement_removes_legacy_blocks() -> None:
     assert strip_enhancement(current) == "镜头缓慢推近。"
 
 
+def test_reenhance_recovers_motion_prompt_from_legacy() -> None:
+    """存量提示词要能零成本跟上新规则：剥掉旧约束、重叠新约束，运镜正文不动。
+
+    这条是「不用重新调视觉模型」的依据——运镜正文（读草图产出的那段）
+    能从旧提示词里完整剥出来，54 个 beat 就省下 54 次视觉模型调用。
+    """
+    from novelvideo.batch_pipeline.prompt_enhancer import (
+        build_shot_context,
+        enhance_video_prompt,
+        strip_enhancement,
+    )
+
+    motion = "镜头从中景向左横移并缓慢推近。 Says: 我进这个家门十年。"
+    legacy = "\n".join(
+        [
+            motion,
+            "【质感】ARRI Alexa 65 电影摄影质感，35mm 胶片颗粒",
+            "【连贯】承接上一镜；道具位置与状态延续：__NO_PROP__",
+            "【机位】严守 180 度轴线",
+            "【口型】说话镜头，唇动与台词节奏对齐",
+            "【避免】多手多指、面部扭曲、慢动作",
+        ]
+    )
+    base = strip_enhancement(legacy)
+    assert base == motion
+
+    prev = {"beat_number": 7, "detected_identities": ["苏晚_医院陪护"], "detected_props": ["__NO_PROP__"]}
+    beat = {**prev, "beat_number": 8, "narration_segment": "我进这个家门十年。",
+            "audio_type": "dialogue", "visual_description": "她摊开手掌。"}
+    ctx = build_shot_context(
+        beat, scene_id="市立医院急诊走廊", time_of_day="夜晚",
+        index_in_scene=3, prev_beat=prev,
+    )
+    refreshed = enhance_video_prompt(base, ctx)
+    assert refreshed.startswith(motion)          # 运镜正文原样保留
+    assert "__NO_PROP__" not in refreshed
+    assert "多手多指" not in refreshed
+    assert len(refreshed) < len(legacy)
+    # 再剥一次仍能回到同一段正文——重复重刷不会累积
+    assert strip_enhancement(refreshed) == motion
+
+
 def test_beat_video_duration() -> None:
     """时长要随 beat 变化。原先一个都不传，全走模型默认 5 秒，节奏全乱。"""
     from novelvideo.batch_pipeline.steps import _beat_video_duration

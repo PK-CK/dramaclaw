@@ -9,6 +9,7 @@ import { api } from "@/lib/api";
 import { jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
+import type { Orientation } from "@/lib/aspect-ratio";
 import type { ApiResponse, ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { Beat } from "@/types/episode";
 
@@ -48,7 +49,7 @@ export interface SketchGenerateParams {
   style?: string | null;
   model?: string;
   sketch_scene_grouping?: boolean;
-  aspect_ratio?: "2:3" | "16:9";
+  aspect_ratio?: Orientation;
   image_generation_selection?: string;
 }
 

@@ -16,7 +16,7 @@ vi.mock("react-i18next", () => ({
 }));
 
 describe("SketchAspectCheckbox", () => {
-  it("uses a dropdown with explicit 2:3 and 16:9 choices", async () => {
+  it("offers all six aspect ratios with their crop cost", async () => {
     const user = userEvent.setup();
     const onAspectRatioChange = vi.fn();
 
@@ -32,10 +32,23 @@ describe("SketchAspectCheckbox", () => {
     expect(screen.getByRole("combobox", { name: "画幅" })).toHaveTextContent("16:9");
 
     await user.click(screen.getByRole("combobox", { name: "画幅" }));
-    expect(await screen.findByRole("option", { name: "2:3" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "16:9" })).toBeInTheDocument();
+    // 六种画幅全部可选，且每项带裁切代价标注——所以按前缀匹配而非全等
+    for (const ratio of ["9:16", "2:3", "3:4", "1:1", "4:3", "16:9"]) {
+      expect(
+        await screen.findByRole("option", {
+          name: new RegExp(`^${ratio.replace(":", ":")}`),
+        }),
+      ).toBeInTheDocument();
+    }
+    // 与出片比例一致的那项要标成零裁切（测试环境不加载翻译文件，断言 key）
+    expect(
+      screen.getByRole("option", { name: /^9:16/ }),
+    ).toHaveTextContent("aspectNoCrop");
+    expect(
+      screen.getByRole("option", { name: /^16:9/ }),
+    ).toHaveTextContent("aspectCrop");
 
-    await user.click(screen.getByRole("option", { name: "2:3" }));
+    await user.click(screen.getByRole("option", { name: /^2:3/ }));
 
     expect(onAspectRatioChange).toHaveBeenCalledWith("2:3");
   });

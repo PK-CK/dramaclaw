@@ -53,7 +53,13 @@ import {
   BillingRuleNotConfiguredError,
 } from "@/lib/api-errors";
 import { resolveMediaUrl } from "@/lib/media-url";
-import { centerCropBoxForRatio, ratioToCss, zoomCropBox } from "@/lib/aspect-ratio";
+import {
+  aspectSpec,
+  centerCropBoxForRatio,
+  ratioToCss,
+  zoomCropBox,
+  type Orientation,
+} from "@/lib/aspect-ratio";
 import { useProjectAspectRatio } from "@/stores/aspect-ratio-store";
 import { cn } from "@/lib/utils";
 import { formatRelativeTime } from "@/lib/format-relative-time";
@@ -3127,9 +3133,10 @@ function isSeedanceReferenceCropBackend(value: string | null | undefined): boole
 }
 
 function seedance2DefaultRatioForProjectAspect(
-  aspect: "2:3" | "16:9",
+  aspect: Orientation,
 ): Seedance2ConfigDraft["ratio"] {
-  return aspect === "16:9" ? "16:9" : "9:16";
+  // seedance2 只有横/竖两档，任意画幅按是否竖屏归到最近的一档
+  return aspectSpec(aspect).isPortrait ? "9:16" : "16:9";
 }
 
 function seedance2CropTargetForAsset(
@@ -3144,9 +3151,10 @@ function seedance2CropTargetForAsset(
 }
 
 function videoInputCropAspectForProjectAspect(
-  aspect: "2:3" | "16:9",
+  aspect: Orientation,
 ): Seedance2CropAspect {
-  return aspect === "16:9" ? "16:9" : "9:16";
+  // 裁切目标只有横/竖两档，任意画幅按是否竖屏归到最近的一档
+  return aspectSpec(aspect).isPortrait ? "9:16" : "16:9";
 }
 
 function cropAspectRatioValue(aspect: Seedance2CropAspect): number {

@@ -169,7 +169,10 @@ describe("beats workbench v2-storage sketch-studio contract", () => {
     );
     const projectTypes = read("src/types/project.ts");
 
-    expect(projectTypes).toContain('aspect_ratio?: "2:3" | "9:16" | "16:9"');
+    // 画幅只该有一个真源：project 类型直接复用 lib/aspect-ratio 的 Orientation，
+    // 不再在这里重复声明联合类型（两边不同步会出现「下拉能选、类型不认」）
+    expect(projectTypes).toContain("aspect_ratio?: Orientation");
+    expect(projectTypes).toContain('from "@/lib/aspect-ratio"');
     expect(route).toContain("orientationForAspectRatio");
     expect(route).toContain("projectConfigRes.data?.data?.aspect_ratio");
     expect(route).toContain("aspect_ratio: aspectRatioForOrientation");

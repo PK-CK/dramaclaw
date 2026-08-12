@@ -8,6 +8,7 @@ import { quotaSafeStateStorage } from "@/lib/localStorageQuota";
 import {
   aspectSpec,
   DEFAULT_ORIENTATION,
+  orientationForAspectRatio,
   type AspectSpec,
   type Orientation,
 } from "@/lib/aspect-ratio";
@@ -37,7 +38,7 @@ export const useAspectRatioStore = create<AspectRatioState>()(
     (set, get) => ({
       byProject: {},
       getOrientation: (project) =>
-        get().byProject[project] ?? DEFAULT_ORIENTATION,
+        normalize(get().byProject[project]) ?? DEFAULT_ORIENTATION,
       setOrientation: (project, orientation) =>
         set((state) => ({
           byProject: { ...state.byProject, [project]: orientation },
@@ -47,9 +48,27 @@ export const useAspectRatioStore = create<AspectRatioState>()(
     {
       name: "supertale-aspect-ratio",
       storage: createJSONStorage(() => quotaSafeStateStorage),
+      // 画幅从二元 portrait/landscape 扩成六种比例字面量后，老用户
+      // localStorage 里还是旧值。不迁移的话 aspectSpec 查不到、整个 UI
+      // 退回默认画幅，用户会以为自己的设置被清了。
+      migrate: (persisted) => {
+        const state = persisted as { byProject?: Record<string, string> } | undefined;
+        const byProject: Record<string, Orientation> = {};
+        for (const [project, value] of Object.entries(state?.byProject ?? {})) {
+          const migrated = normalize(value);
+          if (migrated) byProject[project] = migrated;
+        }
+        return { byProject } as AspectRatioState;
+      },
+      version: 1,
     },
   ),
 );
+
+/** 把任意存量值收敛成合法画幅；不认识的返回 null 由调用方兜底。 */
+function normalize(value: string | undefined): Orientation | null {
+  return value ? orientationForAspectRatio(value) : null;
+}
 
 /**
  * Ergonomic per-project accessor: returns the current orientation, its derived
@@ -62,7 +81,7 @@ export function useProjectAspectRatio(project: string): {
   setOrientation: (orientation: Orientation) => void;
 } {
   const orientation = useAspectRatioStore(
-    (s) => s.byProject[project] ?? DEFAULT_ORIENTATION,
+    (s) => orientationForAspectRatio(s.byProject[project]) ?? DEFAULT_ORIENTATION,
   );
   const setProjectOrientation = useAspectRatioStore((s) => s.setOrientation);
   const setOrientation = useCallback(

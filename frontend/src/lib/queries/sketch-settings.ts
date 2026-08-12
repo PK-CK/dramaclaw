@@ -16,7 +16,14 @@ export interface SketchSettingsUpdate {
   sketch_image_selection?: string;
 }
 
-export type SketchAspectRatio = "2:3" | "16:9";
+/**
+ * 草图生成的画幅参数。
+ *
+ * 与 `lib/aspect-ratio` 的 Orientation 同一套取值——画幅只该有一个真源，
+ * 这里独立维护一份联合类型是历史遗留，两边一旦不同步就会出现
+ * 「下拉能选、类型不认」的编译错。直接复用，不再重复声明。
+ */
+export type { Orientation as SketchAspectRatio } from "@/lib/aspect-ratio";
 
 export function useSketchSettings(project: string) {
   return useQuery({

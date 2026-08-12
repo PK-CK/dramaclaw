@@ -521,7 +521,7 @@ describe("SketchSection", () => {
   });
 
   it("uses the project aspect for single-beat sketch regeneration", async () => {
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
 
     render(
       <SketchSection

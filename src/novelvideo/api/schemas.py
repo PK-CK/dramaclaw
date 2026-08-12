@@ -19,6 +19,12 @@ CANVAS_MAX_EDGES = 200_000
 # ── 通用响应 ──────────────────────────────────────────────────────────────────
 
 
+#: 画幅。底层 generators/nanobanana_grid.py 的 REGEN_MODE_CONFIGS 对这六种
+#: 都备了 1x1~4x4 的完整网格模式；先前 schema 只放了两种，前端也就只能选两种。
+#: 与前端 lib/aspect-ratio.ts 的 Orientation 一一对应，改这里要同步改那里。
+AspectRatio = Literal["1:1", "2:3", "3:4", "4:3", "9:16", "16:9"]
+
+
 class OkResponse(BaseModel):
     ok: bool = True
     data: Any = None
@@ -83,7 +89,7 @@ class ProjectGrantSummary(BaseModel):
 
 class ProjectUpdate(BaseModel):
     spine_template: Optional[Literal["drama", "narrated"]] = None
-    aspect_ratio: Optional[Literal["2:3", "9:16", "16:9"]] = None
+    aspect_ratio: Optional[AspectRatio] = None
     visual_style: Optional[str] = None
     narration_style: Optional[str] = None
     ethnicity: Optional[str] = None
@@ -278,7 +284,7 @@ class SketchGenerateRequest(BaseModel):
     model: str = "nanobanana"
     grid_index: int = 0
     sketch_scene_grouping: bool = True
-    aspect_ratio: Literal["2:3", "16:9"] = "2:3"
+    aspect_ratio: AspectRatio = "2:3"
     image_generation_selection: Optional[str] = None
 
 
@@ -497,7 +503,7 @@ class FreezoneEditRequest(BaseModel):
 class FreezoneSketchFromContextRequest(BaseModel):
     episode: int
     beat: int
-    aspect_ratio: Literal["2:3", "16:9"] = "2:3"
+    aspect_ratio: AspectRatio = "2:3"
     source_kind: Literal[
         "beat",
         "selected_background",
@@ -515,7 +521,7 @@ class FreezoneSketchFromContextRequest(BaseModel):
 class FreezoneFrameFromContextRequest(BaseModel):
     episode: int
     beat: int
-    aspect_ratio: Literal["2:3", "16:9"] = "2:3"
+    aspect_ratio: AspectRatio = "2:3"
     sketch_url: str
     background_url: Optional[str] = None
     identity_urls: list[str] = Field(default_factory=list)

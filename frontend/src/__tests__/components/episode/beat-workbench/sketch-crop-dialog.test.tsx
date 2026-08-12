@@ -76,7 +76,7 @@ describe("SketchCropDialog", () => {
   });
 
   it("renders a fixed-aspect crop frame over the full source image", async () => {
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
 
     render(
       <SketchCropDialog
@@ -104,7 +104,7 @@ describe("SketchCropDialog", () => {
 
   it("saves the fixed-aspect crop box", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
 
     render(
       <SketchCropDialog
@@ -182,7 +182,7 @@ describe("SketchCropDialog", () => {
   });
 
   it("drags the fixed-aspect crop frame without changing its ratio", async () => {
-    useAspectRatioStore.getState().setOrientation("demo", "portrait");
+    useAspectRatioStore.getState().setOrientation("demo", "2:3");
 
     render(
       <SketchCropDialog

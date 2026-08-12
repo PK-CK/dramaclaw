@@ -9,9 +9,27 @@
  * "2:3" / "16:9" / "aspect-video" again.
  */
 
-export type Orientation = "portrait" | "landscape";
-export type ProjectAspectRatio = "2:3" | "16:9";
+/**
+ * 画幅键。取值直接就是比例字面量，与后端 schema 的 Literal 一一对应。
+ *
+ * 底层 `generators/nanobanana_grid.py` 的 REGEN_MODE_CONFIGS 对这六种都备了
+ * 1x1~4x4 的完整网格模式，早就支持；先前只在这里和后端 schema 里被锁成了两个。
+ */
+export type Orientation =
+  | "1:1"
+  | "2:3"
+  | "3:4"
+  | "4:3"
+  | "9:16"
+  | "16:9";
+export type ProjectAspectRatio = Orientation;
 export type SpineTemplate = "drama" | "narrated";
+
+/**
+ * 出片比例。grok-imagine-video 固定输出 9:16 竖屏，改不了。
+ * 首帧图与它不一致的部分会被裁掉，所以渲染画幅越接近这个值越好。
+ */
+export const VIDEO_OUTPUT_RATIO = 9 / 16;
 
 export interface AspectSpec {
   orientation: Orientation;
@@ -24,45 +42,73 @@ export interface AspectSpec {
   /** width / height — used for crop-box math. */
   ratioValue: number;
   /** Sketch generation aspect param (backend-accepted union). */
-  sketchAspect: "2:3" | "16:9";
+  sketchAspect: Orientation;
   /** Render aspect_mode literal sent to the render pipeline. */
-  renderAspect: "2:3" | "16:9";
+  renderAspect: Orientation;
+  /** 竖屏/横屏，供仍按方向做布局判断的地方使用。 */
+  isPortrait: boolean;
 }
 
-const PORTRAIT: AspectSpec = {
-  orientation: "portrait",
-  label: "2:3",
-  cssRatio: "2/3",
-  aspectClass: "aspect-[2/3]",
-  ratioValue: 2 / 3,
-  sketchAspect: "2:3",
-  renderAspect: "2:3",
+function spec(label: Orientation, w: number, h: number, aspectClass: string): AspectSpec {
+  return {
+    orientation: label,
+    label,
+    cssRatio: `${w}/${h}`,
+    aspectClass,
+    ratioValue: w / h,
+    sketchAspect: label,
+    renderAspect: label,
+    isPortrait: w / h < 1,
+  };
+}
+
+const SPECS: Record<Orientation, AspectSpec> = {
+  "1:1": spec("1:1", 1, 1, "aspect-square"),
+  "2:3": spec("2:3", 2, 3, "aspect-[2/3]"),
+  "3:4": spec("3:4", 3, 4, "aspect-[3/4]"),
+  "4:3": spec("4:3", 4, 3, "aspect-[4/3]"),
+  "9:16": spec("9:16", 9, 16, "aspect-[9/16]"),
+  "16:9": spec("16:9", 16, 9, "aspect-video"),
 };
 
-const LANDSCAPE: AspectSpec = {
-  orientation: "landscape",
-  label: "16:9",
-  cssRatio: "16/9",
-  aspectClass: "aspect-video",
-  ratioValue: 16 / 9,
-  sketchAspect: "16:9",
-  renderAspect: "16:9",
-};
+/** 下拉里的顺序：按裁切代价从小到大，与出片比例越接近的排越前。 */
+export const ASPECT_OPTIONS: readonly Orientation[] = [
+  "9:16",  // 零裁切
+  "2:3",   // 左右各裁 7.8%
+  "3:4",   // 12.5%
+  "1:1",   // 21.9%
+  "4:3",   // 28.9%
+  "16:9",  // 34.2%
+];
+
+/**
+ * 选这个画幅出图，送进视频模型时首帧**左右各**要被裁掉的比例。
+ * 0 表示与出片比例一致、零裁切。UI 用它把代价标出来。
+ *
+ * 注意口径：返回的是单侧比例，不是被裁掉的总宽度（总宽 = 2×本值）。
+ * 两种口径混用会让 16:9 看起来比 4:3 便宜，实际相反。
+ */
+export function cropCostForAspect(orientation: Orientation): number {
+  const keep = VIDEO_OUTPUT_RATIO / SPECS[orientation].ratioValue;
+  if (keep >= 1) return 0;
+  return (1 - keep) / 2;
+}
 
 export function aspectSpec(orientation: Orientation): AspectSpec {
-  return orientation === "landscape" ? LANDSCAPE : PORTRAIT;
+  return SPECS[orientation] ?? SPECS["2:3"];
 }
 
 /** Default orientation for a project before any explicit choice. */
-export const DEFAULT_ORIENTATION: Orientation = "portrait";
+export const DEFAULT_ORIENTATION: Orientation = "2:3";
 
 export function orientationForAspectRatio(
   aspectRatio: string | null | undefined,
 ): Orientation | null {
-  if (aspectRatio === "16:9") return "landscape";
-  if (aspectRatio === "2:3") return "portrait";
-  // Backward compatibility for projects that persisted the old vertical value.
-  if (aspectRatio === "9:16") return "portrait";
+  const value = String(aspectRatio ?? "").trim();
+  if (value in SPECS) return value as Orientation;
+  // 旧值兼容：localStorage 里存量是 portrait/landscape 二元枚举。
+  if (value === "portrait") return "2:3";
+  if (value === "landscape") return "16:9";
   return null;
 }
 
@@ -75,7 +121,7 @@ export function aspectRatioForOrientation(
 export function orientationForSpineTemplate(
   spineTemplate: SpineTemplate | null | undefined,
 ): Orientation {
-  return spineTemplate === "narrated" ? "landscape" : DEFAULT_ORIENTATION;
+  return spineTemplate === "narrated" ? "16:9" : DEFAULT_ORIENTATION;
 }
 
 /**

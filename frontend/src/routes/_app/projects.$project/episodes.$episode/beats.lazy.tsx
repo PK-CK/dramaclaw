@@ -215,18 +215,16 @@ function BeatsTabContent() {
   );
   const applyAspect = useCallback(
     (next: SketchAspectRatio) => {
-      const nextOrientation = next === "16:9" ? "landscape" : "portrait";
-      setOrientation(nextOrientation);
+      setOrientation(next);
       void updateProject
-        .mutateAsync({ aspect_ratio: aspectRatioForOrientation(nextOrientation) })
+        .mutateAsync({ aspect_ratio: aspectRatioForOrientation(next) })
         .catch(() => toast.error(t("common.error")));
     },
     [setOrientation, t, updateProject],
   );
   const setSketchAspectRatio = useCallback(
     (next: SketchAspectRatio) => {
-      const nextOrientation = next === "16:9" ? "landscape" : "portrait";
-      if (nextOrientation === orientation) return;
+      if (next === orientation) return;
       if (hasGeneratedAssets) {
         setPendingAspect(next);
         return;
@@ -264,7 +262,11 @@ function BeatsTabContent() {
     videoBackendsRes.data?.data.find((backend) => backend.value === videoBackend)
       ?.is_seedance2 === true;
 
-  const aspectRatio: "portrait" | "landscape" = orientation;
+  // Beat 卡片要的是布局方向（竖版按钮竖排、横版横排），不是比例本身。
+  // 六种画幅按是否竖屏归到两档，卡片组件的二元类型保持不动。
+  const aspectRatio: "portrait" | "landscape" = aspectSpecValue.isPortrait
+    ? "portrait"
+    : "landscape";
 
   const regenSketches = useRegenerateSketches(project, epNum);
   const rebuildPoolIndex = useRebuildPoolIndex(project, epNum);

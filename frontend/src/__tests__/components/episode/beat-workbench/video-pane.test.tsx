@@ -1197,7 +1197,7 @@ describe("VideoPane Seedance2 inspector", () => {
 
   it("uses the Seedance2 configured ratio for multimodal image asset crops", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
     renderPane();
     expandSeedance2References();
 
@@ -1344,7 +1344,7 @@ describe("VideoPane Seedance2 inspector", () => {
 
   it("does not override the configured first-frame crop ratio with the project aspect", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
     renderPane(
       makeBeat({
         seedance2_config_json: JSON.stringify({
@@ -1427,7 +1427,7 @@ describe("VideoPane Seedance2 inspector", () => {
   });
 
   it("defaults new Seedance2 drafts to the project render aspect", async () => {
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
     renderPane(makeBeat({ seedance2_config_json: "" }));
 
     fireEvent.change(screen.getByLabelText("Seedance2.0主体提示词"), {

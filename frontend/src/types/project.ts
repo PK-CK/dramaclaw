@@ -2,9 +2,12 @@
 // Copyright (c) 2026 ClaymoreLab
 export type SpineTemplate = "drama" | "narrated";
 
+import type { Orientation } from "@/lib/aspect-ratio";
+
 export interface ProjectConfig {
   spine_template?: SpineTemplate;
-  aspect_ratio?: "2:3" | "9:16" | "16:9";
+  /** 画幅。取值与 lib/aspect-ratio 的 Orientation 一致（六种比例）。 */
+  aspect_ratio?: Orientation;
   visual_style?: string;
   narration_style?: string;
   ethnicity?: string;

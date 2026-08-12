@@ -2869,7 +2869,9 @@
       "modelPlaceholder": "Select sketch model",
       "aspectRatio": "Aspect",
       "wide16x9": "16:9",
-      "aspectChangeHint": "Switching aspect ratio only affects newly generated content; existing assets must be regenerated to update to the new ratio."
+      "aspectChangeHint": "Switching aspect ratio only affects newly generated content; existing assets must be regenerated to update to the new ratio.",
+      "aspectNoCrop": "no crop",
+      "aspectCrop": "crop {{pct}}%"
     }
   },
   "audioType": {

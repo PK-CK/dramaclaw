@@ -516,7 +516,7 @@ describe("RenderSection", () => {
 
   it("uses the landscape project aspect for single render regeneration and credit cost", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
     regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
 
     render(
@@ -554,7 +554,7 @@ describe("RenderSection", () => {
 
   it("prefers the source sketch aspect over the project aspect", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
     regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
     class MockImage {
       naturalWidth = 1200;
@@ -694,7 +694,7 @@ describe("RenderSection", () => {
 
   it("uses the landscape project aspect for render background crops", async () => {
     const user = userEvent.setup();
-    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    useAspectRatioStore.getState().setOrientation("demo", "16:9");
 
     render(
       <I18nextProvider i18n={i18n}>

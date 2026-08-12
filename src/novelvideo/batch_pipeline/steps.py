@@ -817,6 +817,50 @@ def _existing_video_prompt(beat: dict[str, Any]) -> str:
     return str(beat.get(field) or "").strip()
 
 
+async def _reenhance_existing_prompts(
+    rt: Runtime,
+    store: Any,
+    beats: list[dict[str, Any]],
+    index_in_scene: dict[int, int],
+    beat_by_number: dict[int, dict[str, Any]],
+) -> int:
+    """把存量提示词的约束块按当前规则重叠一遍。
+
+    运镜正文（GlobalVideoOptimizer 读草图产出的那段）原样保留——它可以用
+    strip_enhancement 从旧提示词里完整剥出来，所以**一次模型调用都不需要**。
+    改了 prompt_enhancer 的规则之后想让整集跟上，用这个，别用 regenerate：
+    后者每个 beat 都要再读一次草图，54 个 beat 就是 54 次视觉模型调用。
+    """
+    touched = 0
+    for beat in beats:
+        beat_num = int(beat.get("beat_number") or 0)
+        existing = _existing_video_prompt(beat)
+        if not existing:
+            continue
+        # 首尾帧模式的过渡提示词不叠运镜约束，跳过
+        if str(beat.get("video_mode") or "first_frame") == "keyframe":
+            continue
+        base = strip_enhancement(existing)
+        if not base:
+            continue
+        shot = build_shot_context(
+            beat,
+            scene_id=str((beat.get("scene_ref") or {}).get("scene_id") or ""),
+            time_of_day=str(beat.get("time_of_day") or ""),
+            index_in_scene=index_in_scene.get(beat_num, 0),
+            prev_beat=beat_by_number.get(beat_num - 1),
+        )
+        final = enhance_video_prompt(base, shot)
+        if not final or final == existing:
+            continue
+        await store.update_beat_asset(
+            episode_number=rt.episode, beat_number=beat_num, video_prompt=final
+        )
+        beat["video_prompt"] = final   # 让后续的 _existing_video_prompt 看到新值
+        touched += 1
+    return touched
+
+
 async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
     """逐 beat 生成视频提示词并叠加导演级约束。"""
     from novelvideo.api.routes.scripts import _generate_and_save_beat_video_prompt
@@ -841,18 +885,38 @@ async def _build_video_prompts(rt: Runtime) -> dict[str, Any]:
     reused: list[int] = []
     samples: list[dict[str, Any]] = []
 
+    # prompt_refresh 决定已有提示词怎么处理：
+    #   skip       —— 默认，已有就不动
+    #   reenhance  —— 只重叠约束块：把旧约束剥掉、按当前规则重新叠。
+    #                 运镜正文原样保留，**零模型调用、零成本**。改了 prompt_enhancer
+    #                 之后想让存量提示词跟上新规则，用这个，别用 regenerate。
+    #   regenerate —— 全部推倒重来，每个 beat 都要再调一次视觉模型读草图，花钱
+    refresh = str(rt.options.get("prompt_refresh") or "skip").strip().lower()
+    if refresh not in {"skip", "reenhance", "regenerate"}:
+        rt.log(f"⚠️ 未知的 prompt_refresh「{refresh}」，按 skip 处理")
+        refresh = "skip"
+
+    if refresh == "reenhance":
+        touched = await _reenhance_existing_prompts(
+            rt, store, beats, index_in_scene, beat_by_number
+        )
+        rt.log(f"已重叠约束块：{touched} 个 beat（未调用任何模型）")
+
     # 已经有提示词的不重生成：重生成要再调一次视觉模型（读草图出运镜文案），
     # 花钱，而且会把人工在虾镜里改过的文案覆盖掉。
-    pending = [
-        beat
-        for beat in beats
-        if not _existing_video_prompt(beat)
-    ]
-    reused = [
-        int(beat.get("beat_number") or 0) for beat in beats if _existing_video_prompt(beat)
-    ]
-    if reused:
-        rt.log(f"{len(reused)} 个 beat 已有视频提示词，跳过；只生成 {len(pending)} 个")
+    if refresh == "regenerate":
+        pending = list(beats)
+        reused = []
+        rt.log(f"prompt_refresh=regenerate：{len(pending)} 个 beat 全部重新生成（会调模型）")
+    else:
+        pending = [beat for beat in beats if not _existing_video_prompt(beat)]
+        reused = [
+            int(beat.get("beat_number") or 0)
+            for beat in beats
+            if _existing_video_prompt(beat)
+        ]
+        if reused:
+            rt.log(f"{len(reused)} 个 beat 已有视频提示词，跳过；只生成 {len(pending)} 个")
     if not pending:
         rt.log("全部 beat 都已有视频提示词，整步跳过")
         for beat in beats[:3]:

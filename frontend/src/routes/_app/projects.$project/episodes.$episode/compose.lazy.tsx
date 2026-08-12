@@ -23,6 +23,8 @@ import { api } from "@/lib/api";
 import { p } from "@/lib/api-path";
 import { type StageId } from "@/lib/episode-stage-registry";
 import {
+  aspectSpec,
+  DEFAULT_ORIENTATION,
   orientationForAspectRatio,
   type Orientation,
 } from "@/lib/aspect-ratio";
@@ -69,7 +71,7 @@ function resolutionTier(value: string | undefined | null): ResolutionTier {
 }
 
 function resolutionFor(tier: ResolutionTier, orientation: Orientation): Resolution {
-  if (orientation === "landscape") {
+  if (!aspectSpec(orientation).isPortrait) {
     return tier === "1080" ? "1920x1080" : "1280x720";
   }
   return tier === "1080" ? "1080x1920" : "720x1280";
@@ -132,7 +134,7 @@ function ComposeTabContent() {
   const finalVideoRes = useFinalVideo(project, epNum);
   const canCompose = counts.compose.ready;
   const projectConfig = projectConfigRes.data?.data;
-  const orientation = orientationForAspectRatio(projectConfig?.aspect_ratio) ?? "portrait";
+  const orientation = orientationForAspectRatio(projectConfig?.aspect_ratio) ?? DEFAULT_ORIENTATION;
 
   const [addSubtitles, setAddSubtitles] = useState(true);
   const [resolution, setResolution] = useState<Resolution>("720x1280");
