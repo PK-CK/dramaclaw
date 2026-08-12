@@ -246,6 +246,96 @@ def test_existing_video_prompt_and_video_are_skipped(tmp_path) -> None:
     assert _has_video(rt, {"beat_number": 3, "video_url": "https://x/a.mp4"}) is True
 
 
+def test_prompt_enhancer_drops_sentinels_and_negatives() -> None:
+    """约束块不能泄漏哨兵值、不能带负面词、不能长到稀释运镜指令。"""
+    from novelvideo.batch_pipeline.prompt_enhancer import (
+        build_constraint_block,
+        build_shot_context,
+        enhance_video_prompt,
+    )
+
+    prev = {
+        "beat_number": 7,
+        "detected_identities": ["苏晚_医院陪护", "周明远_落魄西装"],
+        "detected_props": ["__NO_PROP__"],
+    }
+    beat = {
+        "beat_number": 8,
+        "detected_identities": ["苏晚_医院陪护", "周明远_落魄西装"],
+        "detected_props": ["__NO_PROP__"],
+        "narration_segment": "我进这个家门十年。",
+        "audio_type": "dialogue",
+        "visual_description": "她摊开手掌向前送。",
+    }
+    ctx = build_shot_context(
+        beat,
+        scene_id="市立医院急诊走廊",
+        time_of_day="夜晚",
+        index_in_scene=3,
+        prev_beat=prev,
+    )
+    # 哨兵值必须在进 ShotContext 时就被上游的 real_detected_props 滤掉
+    assert ctx.props == []
+    assert ctx.identities == ["苏晚_医院陪护", "周明远_落魄西装"]
+
+    block = build_constraint_block(ctx)
+    assert "__NO_PROP__" not in block
+    assert "__NO_CHARACTER__" not in block
+    # grok 没有 negative_prompt 字段，负面词写进正文是反向诱导
+    assert "【避免】" not in block
+    assert "多手多指" not in block
+    # 约束块不能再回到「比运镜指令还长」。运镜提示词本身 130–160 字，
+    # 上限取 120：既保证约束占比低于四成，又给长场景名留余地
+    # （场景名进【承接】，"市立医院急诊走廊" 就占 8 字）。
+    assert len(block.replace("\n", "")) <= 120, block
+    assert "唇动对齐台词" in block            # 对白镜带口型
+    assert "不越轴" in block
+
+    final = enhance_video_prompt("镜头向左横移并缓慢推近。", ctx)
+    assert final.startswith("镜头向左横移并缓慢推近。")
+    assert "【画面】" in final and "【承接】" in final
+
+
+def test_strip_enhancement_removes_legacy_blocks() -> None:
+    """库里存量提示词带的是旧五段标记，重跑时必须剥得掉，否则叠两代约束。"""
+    from novelvideo.batch_pipeline.prompt_enhancer import is_enhanced, strip_enhancement
+
+    legacy = (
+        "镜头缓慢推近。\n"
+        "【质感】ARRI Alexa 65\n"
+        "【连贯】承接上一镜\n"
+        "【机位】严守 180 度轴线\n"
+        "【口型】唇动对齐\n"
+        "【避免】多手多指、面部扭曲"
+    )
+    assert is_enhanced(legacy)
+    assert strip_enhancement(legacy) == "镜头缓慢推近。"
+
+    current = "镜头缓慢推近。\n【画面】质感\n【承接】同一场景"
+    assert is_enhanced(current)
+    assert strip_enhancement(current) == "镜头缓慢推近。"
+
+
+def test_beat_video_duration() -> None:
+    """时长要随 beat 变化。原先一个都不传，全走模型默认 5 秒，节奏全乱。"""
+    from novelvideo.batch_pipeline.steps import _beat_video_duration
+
+    # 剧本标了就用标的
+    assert _beat_video_duration({"duration_seconds": 8}) == 8
+    assert _beat_video_duration({"duration_seconds": 0, "estimated_duration": 6}) == 6
+    # 没标且无台词 → 静默动作镜的默认值，可调
+    assert _beat_video_duration({"audio_type": "silence"}) == 4
+    assert _beat_video_duration({"audio_type": "silence"}, silent_seconds=3) == 3
+    # 没标但有台词 → 按字数与语速估，对白比旁白慢所以更长
+    line = "我进这个家门十年，做每一件事都要走流程。"
+    spoken = _beat_video_duration({"narration_segment": line, "audio_type": "dialogue"})
+    narrated = _beat_video_duration({"narration_segment": line, "audio_type": "narration"})
+    assert spoken > narrated > 0
+    # 永远不返回 0——0 秒的镜头不存在
+    assert _beat_video_duration({}) >= 1
+    assert _beat_video_duration({"duration_seconds": 0.2}) >= 1
+
+
 def test_empty_inputs_return_empty() -> None:
     assert assign_beats([], [{"beat_number": 1}]) == []
     assert assign_beats(parse_scene_headings(SCRIPT), []) == []

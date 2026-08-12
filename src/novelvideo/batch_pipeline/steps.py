@@ -758,6 +758,41 @@ async def run_video_prompts(rt: Runtime) -> dict[str, Any]:
     return dict(prompts["stats"])
 
 
+#: 静默动作镜的默认时长。这类 beat 没台词、剧本也不标时长（实测 54 个 beat
+#: 里有 25 个如此，与 audio_type=="silence" 完全重合），给一个够走完一个动作、
+#: 又不至于拖沓的值。可用 options.silent_shot_seconds 调。
+_SILENT_SHOT_SECONDS = 4
+
+
+def _beat_video_duration(beat: dict[str, Any], *, silent_seconds: int = _SILENT_SHOT_SECONDS) -> int:
+    """这一镜该出多长。
+
+    原先一个都不传，全走模型默认的 5 秒——台词长的镜头话没说完就切走，
+    静默镜干等，整集节奏全乱（实测剧本应有 144.8 秒，出成了 270.8 秒）。
+
+    **不在这里夹紧边界**：值交给上游
+    ``video_duration.normalize_video_duration_for_backend(backend, value)``
+    按后端能力夹紧并取整，自己再夹一次只会与上游漂移。
+    """
+    from novelvideo.config import TTS_CHARS_PER_SECOND, TTS_DIALOGUE_CHARS_PER_SECOND
+
+    for key in ("duration_seconds", "estimated_duration"):
+        try:
+            declared = float(beat.get(key) or 0)
+        except (TypeError, ValueError):
+            declared = 0.0
+        if declared > 0:
+            return max(1, int(round(declared)))
+
+    text = str(beat.get("narration_segment") or "").strip()
+    if not text:
+        return max(1, silent_seconds)
+
+    is_dialogue = str(beat.get("audio_type") or "") == "dialogue"
+    rate = TTS_DIALOGUE_CHARS_PER_SECOND if is_dialogue else TTS_CHARS_PER_SECOND
+    return max(1, int(round(len(text) / max(rate, 0.1))))
+
+
 def _has_video(rt: Runtime, beat: dict[str, Any]) -> bool:
     """这个 beat 是否已经出过片。
 
@@ -932,15 +967,21 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
     )
 
     backend = str(rt.options.get("video_backend") or "grok_720")
-    # resolution/duration/ratio 只在显式给了值时才塞进请求体：路由用
+    # resolution/ratio 只在显式给了值时才塞进请求体：路由用
     # `"resolution" in model_fields_set` 判断用户有没有动过它，白填一个
     # 默认值会改变计费口径与 seedance2 分支的行为。grok_720 固定 720p，
-    # 本来也不吃这三个字段。
+    # 本来也不吃这两个字段。
+    # duration 不同——它必须逐 beat 给，见 _beat_video_duration。
     extra: dict[str, Any] = {}
-    for key in ("resolution", "duration", "ratio"):
+    for key in ("resolution", "ratio"):
         value = rt.options.get(key)
         if value not in (None, ""):
             extra[key] = value
+    forced_duration = rt.options.get("duration")
+    try:
+        silent_seconds = int(rt.options.get("silent_shot_seconds") or _SILENT_SHOT_SECONDS)
+    except (TypeError, ValueError):
+        silent_seconds = _SILENT_SHOT_SECONDS
     semaphore = asyncio.Semaphore(max(1, int(rt.state.video_concurrency or 3)))
 
     done = 0
@@ -952,7 +993,12 @@ async def run_videos(rt: Runtime) -> dict[str, Any]:
         beat_num = int(beat.get("beat_number") or 0)
         async with semaphore:
             rt.raise_if_cancelled()
-            body = SingleVideoRequest(video_backend=backend, **extra)
+            duration = forced_duration or _beat_video_duration(
+                beat, silent_seconds=silent_seconds
+            )
+            body = SingleVideoRequest(
+                video_backend=backend, duration=duration, **extra
+            )
             try:
                 queued = _require_ok(
                     await generate_single_video(

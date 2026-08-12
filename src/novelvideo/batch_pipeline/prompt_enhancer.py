@@ -2,11 +2,13 @@
 
 `GlobalVideoOptimizer` 产出的是「这一镜动什么」，够用但不管三件事：
 画面质感在整集里会飘、相邻镜之间的服化道与光源会跳、机位会越轴。
-本模块在它的输出后面追加四段约束，只在批量流水线里生效——
+本模块在它的输出后面追加两行约束，只在批量流水线里生效——
 不改共享的系统提示词，避免影响存量的单镜生成。
 
-追加块刻意写得短：视频模型对超长提示词会降质，这里只补
-「模型自己猜不出来、而整集必须一致」的信息。
+追加块刻意写得短（实测约 100 字，上限 120）：视频模型对超长提示词会降质。
+初版拆成质感/连贯/机位/口型四段约 200 字，比运镜指令本身还长，把真正的
+镜头调度稀释掉了，验片时表现为分镜跑偏。现在只补「模型自己猜不出来、
+而整集必须一致」的信息。
 """
 
 from __future__ import annotations
@@ -16,20 +18,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 #: 全集统一的画面质感锚点。整集共用一句，镜与镜之间才不会一段像胶片一段像手机。
-AESTHETIC_ANCHOR = (
-    "ARRI Alexa 65 电影摄影质感，35mm 胶片颗粒，真实肤色，浅景深，"
-    "自然光比，无磨皮无滤镜"
-)
+AESTHETIC_ANCHOR = "ARRI Alexa 65 电影质感，胶片颗粒，真实肤色，浅景深，无磨皮"
 
 #: 时段 → 光线描述。取值与 novelvideo.time_of_day 的规范值一一对应。
 _LIGHTING: dict[str, str] = {
-    "清晨": "冷调晨光斜射，色温偏蓝，阴影长而软",
-    "上午": "明亮日光，色温中性偏冷，阴影清晰",
-    "正午": "顶光强烈，阴影短而硬，高光易过曝",
-    "午后": "暖调侧光，色温偏黄，阴影拉长",
-    "白天": "均匀日光，色温中性，阴影柔和",
-    "黄昏": "低角度暖光，色温橙红，逆光轮廓明显",
-    "夜晚": "低照度人工光源，色温混杂，高对比暗部",
+    "清晨": "冷调斜射晨光，长软阴影",
+    "上午": "明亮偏冷日光",
+    "正午": "顶光强烈，硬阴影",
+    "午后": "暖调侧光，长阴影",
+    "白天": "均匀日光，柔和阴影",
+    "黄昏": "低角度暖光，逆光轮廓",
+    "夜晚": "低照度混合光，高对比暗部",
 }
 
 #: 负面词。短剧出片最常见的四类废片，逐条对应实拍返工原因。
@@ -80,11 +79,17 @@ def build_shot_context(
     index_in_scene: int,
     prev_beat: dict[str, Any] | None = None,
 ) -> ShotContext:
+    # detected_identities / detected_props 在「无角色/无道具」时存的是哨兵
+    # __NO_CHARACTER__ / __NO_PROP__。直接取值会把哨兵原样拼进提示词
+    # （实测 50/54 个 beat 出现「道具位置与状态延续：__NO_PROP__」），
+    # 视频模型会当成一串要理解的文本。用上游现成的过滤函数，别自己写。
+    from novelvideo.models import real_detected_identities, real_detected_props
+
     def _ids(source: dict[str, Any] | None) -> list[str]:
-        return [str(x) for x in ((source or {}).get("detected_identities") or []) if x]
+        return real_detected_identities((source or {}).get("detected_identities"))
 
     def _props(source: dict[str, Any] | None) -> list[str]:
-        return [str(x) for x in ((source or {}).get("detected_props") or []) if x]
+        return real_detected_props((source or {}).get("detected_props"))
 
     return ShotContext(
         beat_number=int(beat.get("beat_number") or 0),
@@ -101,58 +106,59 @@ def build_shot_context(
     )
 
 
-def build_aesthetic_block(ctx: ShotContext) -> str:
-    lighting = _LIGHTING.get(ctx.time_of_day, "")
-    parts = [AESTHETIC_ANCHOR]
-    if lighting:
-        parts.append(lighting)
-    return "【质感】" + "；".join(parts)
-
-
-def build_continuity_block(ctx: ShotContext) -> str:
-    """列出必须与上一镜保持一致的点。
-
-    只列**两镜都出现**的角色与道具——上一镜没有的东西谈不上「继承」，
-    硬写进去反而会诱导模型把它凭空画出来。
-    """
-    if ctx.index_in_scene == 0:
-        return f"【连贯】本场首镜，确立 {ctx.scene_id} 的空间关系与光源方向"
-
-    carried_ids = [i for i in ctx.identities if i in ctx.prev_identities]
-    carried_props = [p for p in ctx.props if p in ctx.prev_props]
-
-    points: list[str] = [f"承接上一镜，同一场景 {ctx.scene_id}，光源方向与色温不变"]
-    if carried_ids:
-        looks = []
-        for identity in carried_ids:
-            name, costume = _strip_identity_suffix(identity)
-            looks.append(f"{name}（{costume}）" if costume else name)
-        points.append("服装、发型、妆容与上一镜完全一致：" + "、".join(looks))
-    if carried_props:
-        points.append("道具位置与状态延续：" + "、".join(carried_props))
-    return "【连贯】" + "；".join(points)
-
-
-def build_axis_block(ctx: ShotContext) -> str:
-    """180 度轴线。首镜定轴，其后各镜守轴。"""
-    if ctx.index_in_scene == 0:
-        return "【机位】本场首镜确立动作轴线，机位定在轴线一侧"
-    return (
-        "【机位】严守 180 度轴线，机位保持在上一镜的同一侧，"
-        "角色的左右朝向不得翻转；换景别可以，越轴不行"
-    )
-
-
 def build_negative_block() -> str:
-    return "【避免】" + "、".join(NEGATIVE_TERMS)
+    """负面词块。
+
+    ⚠️ **当前不参与提示词组装**，故意留着不删。
+
+    grok-imagine-video 的 ``POST /videos/generations`` 契约里没有
+    negative_prompt 字段（见 generators/video_generator.py 的
+    GrokVideoGenerator，只发 prompt / image / duration），这串词只能拼进正文，
+    等于当成正向描述发出去——写「多手多指、面部扭曲」反而诱导模型画出来。
+
+    日后接支持负面词的后端（如 Seedance）时，把它塞进那个字段即可直接复用。
+    """
+    return "、".join(NEGATIVE_TERMS)
 
 
 def _needs_lipsync_note(ctx: ShotContext) -> bool:
     return ctx.is_dialogue and not any(h in ctx.visual_description for h in _SILENT_HINTS)
 
 
+def build_constraint_block(ctx: ShotContext) -> str:
+    """压成两行的约束。
+
+    早先拆成质感/连贯/机位/口型四段，约 200 字，比运镜指令本身还长，
+    把真正的镜头调度稀释掉了（视频模型对超长提示词会降质）。这里只保留
+    模型自己猜不出、而整集必须一致的那几件事，实测约 100 字。
+    """
+    look = [AESTHETIC_ANCHOR]
+    lighting = _LIGHTING.get(ctx.time_of_day, "")
+    if lighting:
+        look.append(lighting)
+    if _needs_lipsync_note(ctx):
+        look.append("唇动对齐台词")
+    lines = ["【画面】" + "，".join(look)]
+
+    if ctx.index_in_scene == 0:
+        lines.append(f"【承接】本场首镜，确立 {ctx.scene_id} 的空间与光源，机位定在轴线一侧")
+        return "\n".join(lines)
+
+    carried = [
+        _strip_identity_suffix(i)[0]
+        for i in ctx.identities
+        if i in ctx.prev_identities
+    ]
+    points = [f"承上镜：{ctx.scene_id}，光源不变"]
+    if carried:
+        points.append("、".join(carried) + " 服化一致")
+    points.append("机位同侧，不越轴")
+    lines.append("【承接】" + "；".join(points))
+    return "\n".join(lines)
+
+
 def enhance_video_prompt(base_prompt: str, ctx: ShotContext) -> str:
-    """在运动提示词后追加四段约束，返回最终提交给视频模型的提示词。
+    """在运动提示词后追加约束，返回最终提交给视频模型的提示词。
 
     base_prompt 为空时返回空串——宁可让上层报「提示词未生成」，
     也不要把一堆只有约束没有动作的文字送去出片。
@@ -160,21 +166,13 @@ def enhance_video_prompt(base_prompt: str, ctx: ShotContext) -> str:
     base = (base_prompt or "").strip()
     if not base:
         return ""
-
-    blocks = [
-        base,
-        build_aesthetic_block(ctx),
-        build_continuity_block(ctx),
-        build_axis_block(ctx),
-    ]
-    if _needs_lipsync_note(ctx):
-        blocks.append("【口型】说话镜头，唇动与台词节奏对齐，下颌与面颊有自然起伏")
-    blocks.append(build_negative_block())
-    return "\n".join(blocks)
+    return base + "\n" + build_constraint_block(ctx)
 
 
 #: 已追加过约束的提示词特征。重跑流水线时用它避免二次叠加。
-_ENHANCED_MARK = re.compile(r"^【(?:质感|连贯|机位|口型|避免)】", re.M)
+#: 质感/连贯/机位/口型/避免是旧版的五个标记，必须继续认——库里存量提示词
+#: 还带着它们，剥不干净就会在重跑时叠加两代约束。
+_ENHANCED_MARK = re.compile(r"^【(?:画面|承接|质感|连贯|机位|口型|避免)】", re.M)
 
 
 def is_enhanced(prompt: str) -> bool:
