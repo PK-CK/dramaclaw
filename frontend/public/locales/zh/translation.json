@@ -2674,6 +2674,13 @@
         "preauthTitle": "预授权(勾选的闸门自动放行)",
         "preauthGate": "自动放行：{{gate}}",
         "mandatoryGateNote": "场景分配表不可预授权——它决定后面每一张图的背景，错了要全部重出。",
+        "promptRefreshTitle": "已有的视频提示词怎么处理",
+        "promptRefreshNote": "改过提示词规则后想让存量文案跟上，选「重叠约束」就够了，不调模型不花钱；只有草图换了一套(比如换了画幅)才需要「重新生成」。",
+        "promptRefresh": {
+          "skip": "沿用已有(默认)",
+          "reenhance": "按新规则重叠约束 · 零成本",
+          "regenerate": "全部重新生成 · 每个 beat 调一次视觉模型"
+        },
         "costEstimate": "预估：{{beats}} 个 beat，视频 {{seconds}} 秒 ≈ ${{usd}}",
         "sceneTableSummary": "共 {{total}} 个 beat，{{changed}} 个需要改写，{{low}} 个低置信",
         "lowConfidenceBeats": "低置信 beat：{{beats}}，建议逐个核对",

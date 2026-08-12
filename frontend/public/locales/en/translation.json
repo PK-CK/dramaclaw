@@ -2674,6 +2674,13 @@
         "preauthTitle": "Pre-authorize (checked gates pass automatically)",
         "preauthGate": "Auto-approve: {{gate}}",
         "mandatoryGateNote": "The scene assignment table cannot be pre-authorized — it decides the background of every image downstream.",
+        "promptRefreshTitle": "What to do with existing video prompts",
+        "promptRefreshNote": "To bring existing prompts in line with updated prompt rules, \"re-apply constraints\" is enough — no model call, no cost. Only regenerate when the sketches themselves changed (e.g. after switching aspect ratio).",
+        "promptRefresh": {
+          "skip": "Keep existing (default)",
+          "reenhance": "Re-apply constraints · free",
+          "regenerate": "Regenerate all · one vision-model call per beat"
+        },
         "costEstimate": "Estimate: {{beats}} beats, {{seconds}}s of video ≈ ${{usd}}",
         "sceneTableSummary": "{{total}} beats, {{changed}} to be rewritten, {{low}} low-confidence",
         "lowConfidenceBeats": "Low-confidence beats: {{beats}} — review them individually",

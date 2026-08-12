@@ -18,6 +18,13 @@ import {
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { GLASS_ALERT_DIALOG_CONTENT_CLASS } from "@/lib/dialog-styles";
 import { backendErrorToastMessage } from "@/lib/api-errors";
 import { cn } from "@/lib/utils";
@@ -53,6 +60,13 @@ const PREAUTHORIZABLE: BatchGateId[] = [
   "video_generation",
 ];
 
+/**
+ * 已有视频提示词的处理方式，与后端 `steps.py` 的 `prompt_refresh` 一一对应。
+ * 顺序即代价从低到高，默认停在最省的那档。
+ */
+const PROMPT_REFRESH_MODES = ["skip", "reenhance", "regenerate"] as const;
+type PromptRefreshMode = (typeof PROMPT_REFRESH_MODES)[number];
+
 interface BatchPipelineDialogProps {
   open: boolean;
   onOpenChange: (v: boolean) => void;
@@ -77,6 +91,7 @@ export function BatchPipelineDialog({
 }: BatchPipelineDialogProps) {
   const { t } = useTranslation();
   const [preauthorized, setPreauthorized] = useState<BatchGateId[]>([]);
+  const [promptRefresh, setPromptRefresh] = useState<PromptRefreshMode>("skip");
 
   const status = useBatchPipelineStatus(project, episode, open);
   const state = status.data?.data;
@@ -101,6 +116,7 @@ export function BatchPipelineDialog({
         autoApprove: preauthorized,
         resolution: "720p",
         videoConcurrency: 3,
+        options: { prompt_refresh: promptRefresh },
       });
       toast.success(res.message);
     } catch (error) {
@@ -278,6 +294,39 @@ export function BatchPipelineDialog({
             <div className="text-[11px] text-muted-foreground">
               {t("episode.workbench.batchPipeline.mandatoryGateNote")}
             </div>
+
+            {/* 已有提示词的处理方式。默认沿用——不给这个开关的话，改了提示词
+                规则也没法让存量文案跟上，除非手动删掉 54 条 video_prompt。 */}
+            <div className="space-y-1.5 border-t border-white/5 pt-2">
+              <div className="text-[11px] font-medium text-muted-foreground">
+                {t("episode.workbench.batchPipeline.promptRefreshTitle")}
+              </div>
+              <Select
+                value={promptRefresh}
+                onValueChange={(v) => setPromptRefresh(v as PromptRefreshMode)}
+              >
+                <SelectTrigger className="h-7 w-full text-[12px]">
+                  {/* base-ui 的 Value 默认渲染 value 本身（会显示成 "skip"），
+                      要拿到中文标签必须用 render prop */}
+                  <SelectValue>
+                    {() =>
+                      t(`episode.workbench.batchPipeline.promptRefresh.${promptRefresh}`)
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {PROMPT_REFRESH_MODES.map((mode) => (
+                    <SelectItem key={mode} value={mode} className="text-[12px]">
+                      {t(`episode.workbench.batchPipeline.promptRefresh.${mode}`)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className="text-[11px] text-muted-foreground">
+                {t("episode.workbench.batchPipeline.promptRefreshNote")}
+              </div>
+            </div>
+
             {cost && (
               <div className="border-t border-white/5 pt-2 text-[11px] text-muted-foreground">
                 {t("episode.workbench.batchPipeline.costEstimate", {
